@@ -1,0 +1,44 @@
+[
+  {
+    "id": 1,
+    "category": "Security Basics",
+    "difficulty": "easy",
+    "question": "Welches Prinzip der CIA-Triad beschreibt, dass Informationen vor unbefugtem Zugriff geschützt werden sollen?",
+    "options": [
+      "Confidentiality",
+      "Integrity",
+      "Availability",
+      "Authentication"
+    ],
+    "correctAnswer": "Confidentiality",
+    "explanation": "Confidentiality bedeutet Vertraulichkeit. Informationen sollen nur für berechtigte Personen oder Systeme zugänglich sein."
+  },
+  {
+    "id": 2,
+    "category": "Identity and Access Management",
+    "difficulty": "easy",
+    "question": "Was beschreibt Authentication am besten?",
+    "options": [
+      "Die Prüfung, wer eine Person oder ein System ist",
+      "Die Prüfung, welche Rechte eine Person hat",
+      "Die Verschlüsselung von Netzwerkverkehr",
+      "Die Sicherung der Verfügbarkeit eines Systems"
+    ],
+    "correctAnswer": "Die Prüfung, wer eine Person oder ein System ist",
+    "explanation": "Authentication prüft die Identität. Authorization prüft anschließend, welche Berechtigungen diese Identität besitzt."
+  },
+  {
+    "id": 3,
+    "category": "Security Architecture",
+    "difficulty": "medium",
+    "question": "Welche Aussage passt am besten zu Zero Trust?",
+    "options": [
+      "Interne Netzwerke gelten automatisch als vertrauenswürdig",
+      "Jeder Zugriff wird überprüft, auch wenn er aus dem internen Netzwerk kommt",
+      "Passwörter werden vollständig abgeschafft",
+      "Firewalls werden nicht mehr benötigt"
+    ],
+    "correctAnswer": "Jeder Zugriff wird überprüft, auch wenn er aus dem internen Netzwerk kommt",
+    "explanation": "Zero Trust basiert auf dem Prinzip 'never trust, always verify'. Vertrauen wird nicht automatisch durch den Netzwerkstandort vergeben."
+  }
+]
