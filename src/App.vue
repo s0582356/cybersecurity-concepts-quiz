@@ -83,5 +83,17 @@ function restartQuiz() {
       <h2>Keine Fragen gefunden</h2>
       <p>Bitte prüfe die Datei src/data/public/sampleQuestions.json.</p>
     </section>
+
+    <footer class="app-footer" aria-label="Projektinformationen">
+      <span>Version 0.3.0</span>
+      <span>Component refactor</span>
+      <a
+        href="https://github.com/s0582356/cybersecurity-concepts-quiz"
+        target="_blank"
+        rel="noreferrer"
+      >
+        GitHub
+      </a>
+    </footer>
   </main>
 </template>
