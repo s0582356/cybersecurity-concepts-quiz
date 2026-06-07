@@ -1,5 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
+import QuizCard from './components/QuizCard.vue'
+import ScoreBox from './components/ScoreBox.vue'
 import questions from './data/public/sampleQuestions.json'
 
 const currentQuestionIndex = ref(0)
@@ -46,22 +48,6 @@ function restartQuiz() {
   isAnswered.value = false
   score.value = 0
 }
-
-function getAnswerClass(option) {
-  if (!isAnswered.value) {
-    return ''
-  }
-
-  if (option === currentQuestion.value.correctAnswer) {
-    return 'answer-correct'
-  }
-
-  if (option === selectedAnswer.value) {
-    return 'answer-wrong'
-  }
-
-  return 'answer-muted'
-}
 </script>
 
 <template>
@@ -76,70 +62,21 @@ function getAnswerClass(option) {
     </section>
 
     <section v-if="currentQuestion" class="quiz-layout">
-      <aside class="score-card">
-        <h2>Fortschritt</h2>
-        <p>
-          Frage {{ currentQuestionIndex + 1 }} von {{ totalQuestions }}
-        </p>
-        <p>
-          Score: <strong>{{ score }}</strong>
-        </p>
-      </aside>
+      <ScoreBox
+        :current-question-index="currentQuestionIndex"
+        :total-questions="totalQuestions"
+        :score="score"
+      />
 
-      <section class="question-card">
-        <div class="question-meta">
-          <span>{{ currentQuestion.category }}</span>
-          <span>{{ currentQuestion.difficulty }}</span>
-        </div>
-
-        <h2>{{ currentQuestion.question }}</h2>
-
-        <div class="answers">
-          <button
-            v-for="option in currentQuestion.options"
-            :key="option"
-            class="answer-button"
-            :class="getAnswerClass(option)"
-            type="button"
-            :disabled="isAnswered"
-            @click="selectAnswer(option)"
-          >
-            {{ option }}
-          </button>
-        </div>
-
-        <div v-if="isAnswered" class="feedback-box">
-          <p v-if="selectedAnswer === currentQuestion.correctAnswer" class="feedback-correct">
-            Richtig.
-          </p>
-          <p v-else class="feedback-wrong">
-            Nicht ganz. Die richtige Antwort ist:
-            <strong>{{ currentQuestion.correctAnswer }}</strong>
-          </p>
-
-          <p class="explanation">
-            {{ currentQuestion.explanation }}
-          </p>
-
-          <button
-            v-if="!isLastQuestion"
-            class="primary-button"
-            type="button"
-            @click="nextQuestion"
-          >
-            Nächste Frage
-          </button>
-
-          <button
-            v-else
-            class="primary-button"
-            type="button"
-            @click="restartQuiz"
-          >
-            Quiz neu starten
-          </button>
-        </div>
-      </section>
+      <QuizCard
+        :question="currentQuestion"
+        :selected-answer="selectedAnswer"
+        :is-answered="isAnswered"
+        :is-last-question="isLastQuestion"
+        @select-answer="selectAnswer"
+        @next-question="nextQuestion"
+        @restart-quiz="restartQuiz"
+      />
     </section>
 
     <section v-else class="question-card">
