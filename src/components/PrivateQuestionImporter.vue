@@ -30,10 +30,20 @@ const validateQuestions = (data) => {
     if (!question.explanation || typeof question.explanation !== 'string') {
       throw new Error(`Frage ${index + 1}: "explanation" fehlt oder ist ungültig.`)
     }
+
+    if (question.category !== undefined && typeof question.category !== 'string') {
+      throw new Error(`Frage ${index + 1}: "category" muss ein Text sein.`)
+    }
+
+    if (question.difficulty !== undefined && typeof question.difficulty !== 'string') {
+      throw new Error(`Frage ${index + 1}: "difficulty" muss ein Text sein.`)
+    }
   })
 
   return data.map((question, index) => ({
     id: question.id ?? index + 1,
+    category: question.category || 'Private Practice',
+    difficulty: question.difficulty || 'private',
     question: question.question,
     options: question.options,
     correctAnswer: question.correctAnswer,
