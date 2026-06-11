@@ -2,22 +2,38 @@
 import { computed, ref } from 'vue'
 import QuizCard from './components/QuizCard.vue'
 import ScoreBox from './components/ScoreBox.vue'
-import questions from './data/public/sampleQuestions.json'
+import PrivateQuestionImporter from './components/PrivateQuestionImporter.vue'
+import sampleQuestions from './data/public/sampleQuestions.json'
 
+const questions = ref(sampleQuestions)
+const questionBankName = ref('Öffentliche Beispiel-Fragen')
+const isQuizStarted = ref(false)
 const currentQuestionIndex = ref(0)
 const selectedAnswer = ref(null)
 const isAnswered = ref(false)
 const score = ref(0)
 
-const totalQuestions = computed(() => questions.length)
+const totalQuestions = computed(() => questions.value.length)
 
 const currentQuestion = computed(() => {
-  return questions[currentQuestionIndex.value]
+  return questions.value[currentQuestionIndex.value]
 })
 
 const isLastQuestion = computed(() => {
   return currentQuestionIndex.value === totalQuestions.value - 1
 })
+
+function resetQuizProgress() {
+  currentQuestionIndex.value = 0
+  selectedAnswer.value = null
+  isAnswered.value = false
+  score.value = 0
+}
+
+function startQuiz() {
+  resetQuizProgress()
+  isQuizStarted.value = true
+}
 
 function selectAnswer(option) {
   if (isAnswered.value) {
@@ -43,10 +59,13 @@ function nextQuestion() {
 }
 
 function restartQuiz() {
-  currentQuestionIndex.value = 0
-  selectedAnswer.value = null
-  isAnswered.value = false
-  score.value = 0
+  resetQuizProgress()
+}
+
+function loadPrivateQuestions({ questions: importedQuestions, fileName }) {
+  questions.value = importedQuestions
+  questionBankName.value = `Private Fragebank: ${fileName}`
+  resetQuizProgress()
 }
 </script>
 
@@ -59,9 +78,26 @@ function restartQuiz() {
         Eine kleine Vue.js-Lern-App mit neutralen Beispiel-Fragen zu allgemeinen
         Cybersecurity-Konzepten.
       </p>
+      <p class="question-bank-label">{{ questionBankName }}</p>
     </section>
 
-    <section v-if="currentQuestion" class="quiz-layout">
+    <section v-if="!isQuizStarted" class="start-layout" aria-label="Quiz vorbereiten">
+      <PrivateQuestionImporter @questions-loaded="loadPrivateQuestions" />
+
+      <section class="start-card">
+        <h2>Quiz bereit</h2>
+        <p>
+          Du kannst mit den öffentlichen Beispiel-Fragen starten oder vorher eine
+          private lokale JSON-Fragebank auswählen.
+        </p>
+
+        <button class="start-button" type="button" @click="startQuiz">
+          Mit aktueller Fragebank starten
+        </button>
+      </section>
+    </section>
+
+    <section v-else-if="currentQuestion" class="quiz-layout">
       <ScoreBox
         :current-question-index="currentQuestionIndex"
         :total-questions="totalQuestions"
