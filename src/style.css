@@ -359,3 +359,126 @@ h1 {
   transform: translateY(-1px);
   box-shadow: 0 18px 38px rgba(14, 165, 233, 0.36);
 }
+
+.review-mode-label {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  margin: 10px 0 0 10px;
+  padding: 8px 14px;
+  border: 1px solid rgba(134, 239, 172, 0.45);
+  border-radius: 999px;
+  background: rgba(22, 163, 74, 0.16);
+  color: #bbf7d0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.result-card {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  padding: 30px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 24px;
+  background: rgba(15, 23, 42, 0.78);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(16px);
+}
+
+.result-card h2 {
+  margin: 0 0 22px;
+  color: #f8fafc;
+  font-size: 2rem;
+}
+
+.result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.result-grid div {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(30, 41, 59, 0.66);
+}
+
+.result-grid span {
+  display: block;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.result-grid strong {
+  display: block;
+  margin-top: 8px;
+  color: #f8fafc;
+  font-size: 1.7rem;
+  line-height: 1;
+}
+
+.result-message,
+.perfect-message {
+  margin: 22px 0 0;
+  line-height: 1.6;
+  font-weight: 800;
+}
+
+.result-message {
+  color: #bae6fd;
+}
+
+.perfect-message {
+  color: #86efac;
+}
+
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.result-actions .primary-button,
+.result-actions .secondary-button {
+  margin-top: 0;
+}
+
+.secondary-button {
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 999px;
+  padding: 12px 20px;
+  color: #e5e7eb;
+  background: rgba(30, 41, 59, 0.82);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.secondary-button:hover {
+  border-color: rgba(56, 189, 248, 0.8);
+  background: rgba(51, 65, 85, 0.95);
+}
+
+@media (max-width: 560px) {
+  .review-mode-label {
+    margin-left: 0;
+  }
+
+  .result-card {
+    padding: 22px;
+  }
+
+  .result-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .result-actions,
+  .result-actions .primary-button,
+  .result-actions .secondary-button {
+    width: 100%;
+  }
+}
+

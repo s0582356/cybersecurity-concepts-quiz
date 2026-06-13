@@ -87,7 +87,7 @@ function getAnswerClass(option) {
         type="button"
         @click="emit('restart-quiz')"
       >
-        Quiz neu starten
+        Auswertung anzeigen
       </button>
     </div>
   </section>

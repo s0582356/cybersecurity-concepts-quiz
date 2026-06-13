@@ -2,7 +2,7 @@
 
 Eine kleine Vue.js-Portfolio-App zum Lernen und Wiederholen allgemeiner Cybersecurity-Grundlagen.
 
-Die App zeigt Multiple-Choice-Fragen aus einer öffentlichen JSON-Fragebank an und bietet direktes Feedback, Erklärungen, Score-Anzeige, Quiz-Navigation und einen kleinen Versions-Footer.
+Die App zeigt Multiple-Choice-Fragen aus einer öffentlichen JSON-Fragebank an und bietet direktes Feedback, Erklärungen, Score-Anzeige, Abschlussauswertung, sitzungsbasierte Wiederholung falscher Fragen, Quiz-Navigation und einen kleinen Versions-Footer.
 
 ## Live-Demo
 
@@ -32,8 +32,13 @@ Ziel des Projekts ist es, eine saubere Frontend-Struktur, JSON-basierte Datenmod
 * Direktes Feedback nach Antwortauswahl
 * Erklärung nach jeder Antwort
 * Score-Anzeige
+* Abschlussauswertung mit Gesamtfragen, richtigen Antworten, falschen Antworten und Prozentwert
+* Ergebnisabhängiger Bewertungstext
+* Sitzungsbasierter Wiederholungsmodus für falsch beantwortete Fragen
+* Sichtbares Label für den Wiederholungsmodus
+* Lokales Laden privater Fragebanken über die Dateiauswahl
 * Navigation zur nächsten Frage
-* Neustart nach der letzten Frage
+* Neustart über den Ergebnisbildschirm
 * Komponentenbasierte UI-Struktur
 * Versions-Footer mit GitHub-Link
 * Klare Trennung zwischen öffentlichen Demo-Daten und privaten lokalen Lernmaterialien
@@ -83,13 +88,15 @@ src/data/public/sampleQuestions.json
 
 Diese Datei ist für GitHub und Deployment vorgesehen. Sie enthält nur eigene Beispiel-Fragen zu allgemeinen Cybersecurity-Konzepten.
 
-Private lokale Lernmaterialien können außerhalb des öffentlichen Quellcodes abgelegt werden und werden von Git ignoriert:
+Private Fragebanken können lokal über die Dateiauswahl des Browsers als JSON-Dateien geladen werden. Sie bleiben während der Sitzung auf dem Gerät der Nutzerin oder des Nutzers und werden nicht hochgeladen, nicht auf einem Server gespeichert und nicht in die deployte statische Website eingebunden.
 
-```text
-private/
-```
+Private lokale Lernmaterialien sollten außerhalb des öffentlichen Quellcodes bleiben und nicht committed, gepusht, deployed oder in Screenshots gezeigt werden.
 
-Der private Ordner ist über `.gitignore` ausgeschlossen und soll nicht committed, gepusht, deployed oder in Screenshots gezeigt werden.
+## Lernworkflow
+
+Eine Quiz-Sitzung kann mit den öffentlichen Beispiel-Fragen oder mit einer lokal ausgewählten privaten Fragebank durchgeführt werden. Am Ende zeigt die App eine Abschlussauswertung mit Gesamtfragen, richtigen Antworten, falschen Antworten, Prozentwert und einem kurzen Bewertungstext.
+
+Wenn Fragen falsch beantwortet wurden, bietet der Ergebnisbildschirm einen Wiederholungsmodus für diese Fehlerfragen an. Dadurch startet eine neue Sitzung nur mit den verpassten Fragen, während die ursprüngliche Fragebank für einen normalen Neustart erhalten bleibt.
 
 ## Lokale Entwicklung
 
@@ -156,7 +163,7 @@ Version 0.3.0
 Component refactor
 ```
 
-Die aktuelle Version enthält eine ausgelagerte Komponentenstruktur und einen kleinen Footer mit Versionsinformation und GitHub-Link.
+Die aktuelle Version enthält eine ausgelagerte Komponentenstruktur, eine Abschlussauswertung, sitzungsbasierte Wiederholung falscher Fragen, lokales Laden privater Fragebanken und einen kleinen Footer mit Versionsinformation und GitHub-Link.
 
 ## Datenschutz- und Inhaltshinweis
 
@@ -168,4 +175,4 @@ Sie enthält keine echten Prüfungsfragen, keine Brain Dumps, keine kopierten Ku
 
 Das Projekt steht in keiner Verbindung zu Zertifizierungsanbietern, Trainingsplattformen, Kursautoren oder Prüfungsanbietern.
 
-Private Lernfragebanken können in zukünftigen Versionen lokal verwendet werden. Diese privaten Dateien werden nicht hochgeladen, nicht gespeichert, nicht deployed und nicht im öffentlichen Repository veröffentlicht.
+Private Fragebanken können lokal über die Dateiauswahl verwendet werden. Diese privaten Dateien werden nicht hochgeladen, nicht gespeichert, nicht deployed und nicht im öffentlichen Repository veröffentlicht.

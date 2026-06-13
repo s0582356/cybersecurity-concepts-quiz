@@ -2,7 +2,7 @@
 
 A small Vue.js portfolio project for learning and reviewing general cybersecurity concepts.
 
-The app displays multiple-choice questions from a public JSON question bank and provides immediate feedback, explanations, score tracking, quiz navigation, and a small version footer.
+The app displays multiple-choice questions from a public JSON question bank and provides immediate feedback, explanations, score tracking, a result summary, session-based wrong-answer review, quiz navigation, and a small version footer.
 
 ## Live Demo
 
@@ -32,8 +32,13 @@ The goal of this project is to demonstrate a clean frontend structure, JSON-base
 * Immediate answer feedback
 * Explanation after each answer
 * Score tracking
+* Result summary with total questions, correct answers, wrong answers, and percentage
+* Result-based feedback message
+* Session-based wrong-answer review mode
+* Visible review-mode label
+* Local private question bank import through the file picker
 * Next-question navigation
-* Restart option after the last question
+* Restart option after the result screen
 * Component-based UI structure
 * Version footer with GitHub link
 * Clear separation between public demo data and private local study material
@@ -83,13 +88,15 @@ src/data/public/sampleQuestions.json
 
 This file is intended for GitHub and deployment. It contains only original sample questions about general cybersecurity concepts.
 
-Private local study material can be stored outside the public source code and is ignored by Git:
+Private question banks can be loaded locally through the browser file picker as JSON files. They stay on the user's device during the session and are not uploaded, stored on a server, or included in the deployed static site.
 
-```text
-private/
-```
+Private local study material should remain outside the public source code and must not be committed, pushed, deployed, or shown in screenshots.
 
-The private folder is excluded through `.gitignore` and is not intended to be committed, pushed, deployed, or shown in screenshots.
+## Learning Workflow
+
+A quiz session can be completed with the public sample questions or with a locally selected private question bank. At the end of a session, the app shows a result summary with total questions, correct answers, wrong answers, percentage, and a short feedback message.
+
+If any questions were answered incorrectly, the result screen offers a wrong-answer review mode. This starts a new session with only the missed questions while preserving the original question bank for a normal restart.
 
 ## Local Development
 
@@ -156,7 +163,7 @@ Version 0.3.0
 Component refactor
 ```
 
-The current version includes a refactored component structure and a small footer with version information and a GitHub link.
+The current version includes a refactored component structure, a result summary, session-based wrong-answer review, local private question bank loading, and a small footer with version information and a GitHub link.
 
 ## Privacy and Content Disclaimer
 
@@ -168,4 +175,4 @@ It does not include real exam questions, brain dumps, copied course materials, o
 
 It is not affiliated with any certification provider, training platform, course author, or exam preparation provider.
 
-Private study question banks can be used locally in future versions. These private files are not uploaded, stored, deployed, or included in the public repository.
+Private question banks can be used locally through the file picker. These private files are not uploaded, stored, deployed, or included in the public repository.
