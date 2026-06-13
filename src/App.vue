@@ -15,7 +15,10 @@ const currentQuestionIndex = ref(0)
 const selectedAnswer = ref(null)
 const isAnswered = ref(false)
 const score = ref(0)
+const currentStreak = ref(0)
+const bestStreak = ref(0)
 const incorrectlyAnsweredQuestions = ref([])
+const answeredQuestions = ref([])
 
 const totalQuestions = computed(() => questions.value.length)
 const wrongAnswerCount = computed(() => totalQuestions.value - score.value)
@@ -51,6 +54,66 @@ const resultMessage = computed(() => {
   return 'Noch unsicher – Fehlerfragen wiederholen'
 })
 
+const categoryResults = computed(() => {
+  const categories = new Map()
+
+  answeredQuestions.value.forEach((answer) => {
+    const categoryName = answer.category || 'Allgemein'
+
+    if (!categories.has(categoryName)) {
+      categories.set(categoryName, {
+        name: categoryName,
+        correct: 0,
+        total: 0,
+      })
+    }
+
+    const category = categories.get(categoryName)
+    category.total++
+
+    if (answer.isCorrect) {
+      category.correct++
+    }
+  })
+
+  return [...categories.values()]
+    .map((category) => {
+      const percentage = Math.round((category.correct / category.total) * 100)
+      let label = 'Wiederholen'
+      let statusClass = 'category-review'
+
+      if (percentage >= 80) {
+        label = 'Stark'
+        statusClass = 'category-strong'
+      } else if (percentage >= 60) {
+        label = 'Solide'
+        statusClass = 'category-solid'
+      }
+
+      return {
+        ...category,
+        percentage,
+        label,
+        statusClass,
+      }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
+})
+
+const weakCategories = computed(() => {
+  return categoryResults.value
+    .filter((category) => category.percentage < 60)
+    .map((category) => category.name)
+})
+
+const learningRecommendation = computed(() => {
+  if (weakCategories.value.length > 0) {
+    return `Wiederhole besonders: ${weakCategories.value.join(', ')}`
+  }
+
+  return 'Keine klare Schwachstelle in diesem Durchlauf.'
+})
+
 function getQuestionKey(question) {
   return [
     question.id,
@@ -62,11 +125,34 @@ function getQuestionKey(question) {
     .join('::')
 }
 
+function shuffleOptions(options = []) {
+  const shuffledOptions = [...options]
+
+  for (let index = shuffledOptions.length - 1; index > 0; index--) {
+    const randomIndex = Math.floor(Math.random() * (index + 1))
+    const currentOption = shuffledOptions[index]
+    shuffledOptions[index] = shuffledOptions[randomIndex]
+    shuffledOptions[randomIndex] = currentOption
+  }
+
+  return shuffledOptions
+}
+
+function shuffleOptionsForQuestions(questionList) {
+  return questionList.map((question) => ({
+    ...question,
+    options: shuffleOptions(question.options),
+  }))
+}
+
 function resetQuizProgress({ clearIncorrectAnswers = true } = {}) {
   currentQuestionIndex.value = 0
   selectedAnswer.value = null
   isAnswered.value = false
   score.value = 0
+  currentStreak.value = 0
+  bestStreak.value = 0
+  answeredQuestions.value = []
   isQuizComplete.value = false
 
   if (clearIncorrectAnswers) {
@@ -75,7 +161,7 @@ function resetQuizProgress({ clearIncorrectAnswers = true } = {}) {
 }
 
 function startQuiz() {
-  questions.value = originalQuestions.value
+  questions.value = shuffleOptionsForQuestions(originalQuestions.value)
   isReviewMode.value = false
   resetQuizProgress()
   isQuizStarted.value = true
@@ -89,10 +175,22 @@ function selectAnswer(option) {
   selectedAnswer.value = option
   isAnswered.value = true
 
-  if (option === currentQuestion.value.correctAnswer) {
+  const isCorrect = option === currentQuestion.value.correctAnswer
+
+  answeredQuestions.value.push({
+    key: getQuestionKey(currentQuestion.value),
+    category: currentQuestion.value.category || 'Allgemein',
+    isCorrect,
+  })
+
+  if (isCorrect) {
     score.value++
+    currentStreak.value++
+    bestStreak.value = Math.max(bestStreak.value, currentStreak.value)
     return
   }
+
+  currentStreak.value = 0
 
   const alreadyTracked = incorrectlyAnsweredQuestions.value.some((question) => {
     return getQuestionKey(question) === getQuestionKey(currentQuestion.value)
@@ -118,7 +216,7 @@ function finishQuiz() {
 }
 
 function restartWithCurrentQuestionBank() {
-  questions.value = originalQuestions.value
+  questions.value = shuffleOptionsForQuestions(originalQuestions.value)
   isReviewMode.value = false
   resetQuizProgress()
   isQuizStarted.value = true
@@ -129,15 +227,22 @@ function repeatIncorrectQuestions() {
     return
   }
 
-  questions.value = [...incorrectlyAnsweredQuestions.value]
+  questions.value = shuffleOptionsForQuestions(incorrectlyAnsweredQuestions.value)
   isReviewMode.value = true
   resetQuizProgress()
   isQuizStarted.value = true
 }
 
+function showQuestionBankSelection() {
+  questions.value = originalQuestions.value
+  isReviewMode.value = false
+  isQuizStarted.value = false
+  resetQuizProgress()
+}
+
 function loadPrivateQuestions({ questions: importedQuestions, fileName }) {
-  questions.value = importedQuestions
   originalQuestions.value = importedQuestions
+  questions.value = shuffleOptionsForQuestions(importedQuestions)
   questionBankName.value = `Private Fragebank: ${fileName}`
   isReviewMode.value = false
   isQuizStarted.value = false
@@ -197,9 +302,32 @@ function loadPrivateQuestions({ questions: importedQuestions, fileName }) {
           <span>Prozentwert</span>
           <strong>{{ scorePercentage }}%</strong>
         </div>
+        <div>
+          <span>Beste Serie</span>
+          <strong>{{ bestStreak }}</strong>
+        </div>
       </div>
 
       <p class="result-message">{{ resultMessage }}</p>
+
+      <section class="category-summary" aria-label="Kategorie-Auswertung">
+        <h3>Kategorie-Auswertung</h3>
+        <div class="category-list">
+          <article
+            v-for="category in categoryResults"
+            :key="category.name"
+            class="category-card"
+            :class="category.statusClass"
+          >
+            <div>
+              <h4>{{ category.name }}</h4>
+              <p>{{ category.correct }}/{{ category.total }} richtig ({{ category.percentage }}%)</p>
+            </div>
+            <span>{{ category.label }}</span>
+          </article>
+        </div>
+        <p class="learning-recommendation">{{ learningRecommendation }}</p>
+      </section>
       <p v-if="incorrectlyAnsweredQuestions.length === 0" class="perfect-message">
         Perfekt – keine Fehler zum Wiederholen.
       </p>
@@ -216,7 +344,7 @@ function loadPrivateQuestions({ questions: importedQuestions, fileName }) {
         <button class="secondary-button" type="button" @click="restartWithCurrentQuestionBank">
           Neu starten
         </button>
-        <button class="secondary-button" type="button" @click="isQuizStarted = false">
+        <button class="secondary-button" type="button" @click="showQuestionBankSelection">
           Andere Fragebank laden
         </button>
       </div>
@@ -227,6 +355,8 @@ function loadPrivateQuestions({ questions: importedQuestions, fileName }) {
         :current-question-index="currentQuestionIndex"
         :total-questions="totalQuestions"
         :score="score"
+        :current-streak="currentStreak"
+        :best-streak="bestStreak"
       />
 
       <QuizCard

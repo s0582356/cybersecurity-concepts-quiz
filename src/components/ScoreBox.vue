@@ -12,6 +12,14 @@ defineProps({
     type: Number,
     required: true,
   },
+  currentStreak: {
+    type: Number,
+    required: true,
+  },
+  bestStreak: {
+    type: Number,
+    required: true,
+  },
 })
 </script>
 
@@ -23,6 +31,12 @@ defineProps({
     </p>
     <p>
       Score: <strong>{{ score }}</strong>
+    </p>
+    <p>
+      Aktuelle Serie: <strong>{{ currentStreak }}</strong>
+    </p>
+    <p>
+      Beste Serie: <strong>{{ bestStreak }}</strong>
     </p>
   </aside>
 </template>
