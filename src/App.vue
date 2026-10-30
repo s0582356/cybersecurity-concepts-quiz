@@ -5,6 +5,15 @@ import ScoreBox from './components/ScoreBox.vue'
 import PrivateQuestionImporter from './components/PrivateQuestionImporter.vue'
 import sampleQuestions from './data/public/sampleQuestions.json'
 import { summarizeLibraryProgress } from './domain/progressSummary.js'
+import {
+  SESSION_STATUS,
+  applyOptionOrder,
+  createSessionRecord,
+  evaluateSession,
+  isValidOptionOrder,
+  optionOrderOf,
+  shuffled,
+} from './domain/session.js'
 import { createProgressStore } from './storage/progressStore.js'
 import { IMPORT_STATUS, registerLibraryImport } from './storage/libraryImport.js'
 
@@ -30,6 +39,9 @@ const activeLibrary = ref(null)
 const importMessage = ref(null)
 const persistenceWarning = ref('')
 const librarySummary = ref(null)
+// Phase 2B: Resume-Zustand der V2-Lernrunde (getrennt vom dauerhaften Question Progress).
+const sessionInfo = ref(null)
+const activeSessionId = ref(null)
 let storageReady = null
 let pendingWrites = Promise.resolve()
 
@@ -178,10 +190,103 @@ function resetQuizProgress({ clearIncorrectAnswers = true } = {}) {
 }
 
 function startQuiz() {
+  if (activeLibrary.value) {
+    return startLearningSession()
+  }
+
   questions.value = shuffleOptionsForQuestions(originalQuestions.value)
   isReviewMode.value = false
   resetQuizProgress()
   isQuizStarted.value = true
+}
+
+function optionKeyOf(question, option) {
+  return Object.keys(question.optionTextByKey ?? {}).find((key) => question.optionTextByKey[key] === option) ?? null
+}
+
+// Neue V2-Lernrunde: Reihenfolge wird einmal erzeugt und persistiert (kein Neu-Shuffle beim Reload).
+// Ersetzt eine vorhandene Session der Bibliothek; dauerhafter Question Progress bleibt erhalten.
+async function startLearningSession() {
+  const orderedQuestions = shuffled(shuffleOptionsForQuestions(originalQuestions.value))
+  activeSessionId.value = null
+  await pendingWrites
+
+  if (await storageReady) {
+    try {
+      const session = createSessionRecord({
+        library: activeLibrary.value,
+        orderedQuestionIds: orderedQuestions.map((question) => question.id),
+        optionOrder: optionOrderOf(orderedQuestions[0]),
+      })
+
+      await progressStore.startNewSession(session)
+      activeSessionId.value = session.sessionId
+    } catch (error) {
+      persistenceWarning.value = `Lernrunde wird nicht gespeichert: ${error.message}`
+    }
+  }
+
+  questions.value = orderedQuestions
+  isReviewMode.value = false
+  resetQuizProgress()
+  sessionInfo.value = null
+  isQuizStarted.value = true
+}
+
+async function resumeLearningSession() {
+  const info = sessionInfo.value
+
+  if (info?.status !== SESSION_STATUS.RESUMABLE) {
+    return
+  }
+
+  const { session } = info
+  const restoredOrder = info.currentState?.optionOrder
+  const resumedQuestions = info.orderedQuestions.map((question) => {
+    if (question.id === info.currentQuestionId && isValidOptionOrder(restoredOrder)) {
+      return applyOptionOrder(question, restoredOrder)
+    }
+
+    return { ...question, options: shuffleOptions(question.options) }
+  })
+  const questionsById = new Map(resumedQuestions.map((question) => [question.id, question]))
+  const correctIds = new Set(session.correctQuestionIds)
+
+  questions.value = resumedQuestions
+  isReviewMode.value = false
+  resetQuizProgress()
+
+  answeredQuestions.value = session.answeredQuestionIds.map((id) => {
+    const question = questionsById.get(id)
+
+    return {
+      key: getQuestionKey(question),
+      category: question.category || 'Allgemein',
+      isCorrect: correctIds.has(id),
+    }
+  })
+  incorrectlyAnsweredQuestions.value = session.answeredQuestionIds
+    .filter((id) => !correctIds.has(id))
+    .map((id) => questionsById.get(id))
+  score.value = info.stats.correctCount
+  currentStreak.value = session.currentStreak ?? 0
+  bestStreak.value = session.bestSessionStreak ?? 0
+  currentQuestionIndex.value = info.currentIndex
+
+  if (session.answeredQuestionIds.includes(info.currentQuestionId)) {
+    const current = questionsById.get(info.currentQuestionId)
+    const key = info.currentState?.selectedOptionKey
+
+    isAnswered.value = true
+    selectedAnswer.value = key ? (current.optionTextByKey?.[key] ?? null) : null
+  }
+
+  activeSessionId.value = session.sessionId
+  sessionInfo.value = null
+  isQuizStarted.value = true
+
+  const sessionId = session.sessionId
+  queueWrite(() => progressStore.markSessionResumed(sessionId), 'Lernrunde konnte nicht aktualisiert werden')
 }
 
 function selectAnswer(option) {
@@ -200,7 +305,7 @@ function selectAnswer(option) {
     isCorrect,
   })
 
-  persistAnswer(currentQuestion.value, isCorrect)
+  persistAnswer(currentQuestion.value, isCorrect, option)
 
   if (isCorrect) {
     score.value++
@@ -228,13 +333,43 @@ function nextQuestion() {
   currentQuestionIndex.value++
   selectedAnswer.value = null
   isAnswered.value = false
+
+  // Erst beim tatsächlichen Wechsel ändern sich currentQuestionId/currentIndex im Storage.
+  if (activeSessionId.value && !isReviewMode.value) {
+    const sessionId = activeSessionId.value
+    const next = currentQuestion.value
+
+    queueWrite(
+      () =>
+        progressStore.advanceSessionTo({
+          sessionId,
+          questionId: next.id,
+          optionOrder: optionOrderOf(next),
+        }),
+      'Lernrunde konnte nicht gespeichert werden',
+    )
+  }
 }
 
 function finishQuiz() {
   isQuizComplete.value = true
+
+  if (activeSessionId.value && !isReviewMode.value) {
+    const sessionId = activeSessionId.value
+
+    activeSessionId.value = null
+    queueWrite(
+      () => progressStore.completeSessionById(sessionId),
+      'Lernrunde konnte nicht abgeschlossen werden',
+    )
+  }
 }
 
 function restartWithCurrentQuestionBank() {
+  if (activeLibrary.value) {
+    return startLearningSession()
+  }
+
   questions.value = shuffleOptionsForQuestions(originalQuestions.value)
   isReviewMode.value = false
   resetQuizProgress()
@@ -256,8 +391,10 @@ function showQuestionBankSelection() {
   questions.value = originalQuestions.value
   isReviewMode.value = false
   isQuizStarted.value = false
+  activeSessionId.value = null
   resetQuizProgress()
   refreshLibrarySummary()
+  refreshSessionInfo()
 }
 
 function ensureStorage() {
@@ -274,27 +411,111 @@ function ensureStorage() {
   return storageReady
 }
 
-function persistAnswer(question, isCorrect) {
+// Schreibaufträge laufen nacheinander (Antwort → Weiter → Abschluss behalten ihre Reihenfolge).
+function queueWrite(task, failureMessage) {
+  pendingWrites = pendingWrites
+    .then(async () => {
+      if (await storageReady) {
+        await task()
+      }
+    })
+    .catch((error) => {
+      persistenceWarning.value = `${failureMessage}: ${error.message}`
+    })
+}
+
+function persistAnswer(question, isCorrect, option) {
   if (!question.libraryId || !activeLibrary.value) {
     return
   }
 
-  pendingWrites = pendingWrites
-    .then(async () => {
-      if (!(await storageReady)) {
+  const sessionId = isReviewMode.value ? null : activeSessionId.value
+  const answer = { libraryId: question.libraryId, questionId: question.id, isCorrect }
+
+  queueWrite(async () => {
+    // Antwort und Rundenstand werden gemeinsam in einer Transaktion geschrieben.
+    if (sessionId) {
+      const result = await progressStore.recordSessionAnswer({
+        ...answer,
+        sessionId,
+        selectedOptionKey: optionKeyOf(question, option),
+        optionOrder: optionOrderOf(question),
+      })
+
+      if (result.recorded || !['noSession', 'unknownQuestion'].includes(result.reason)) {
         return
       }
+    }
 
-      await progressStore.recordAnswer({
-        libraryId: question.libraryId,
-        questionId: question.id,
-        isCorrect,
-      })
-    })
-    .catch((error) => {
-      persistenceWarning.value = `Fortschritt konnte nicht gespeichert werden: ${error.message}`
-    })
+    await progressStore.recordAnswer(answer)
+  }, 'Fortschritt konnte nicht gespeichert werden')
 }
+
+async function refreshSessionInfo() {
+  sessionInfo.value = null
+
+  if (!activeLibrary.value) {
+    return
+  }
+
+  await pendingWrites
+
+  if (!(await storageReady)) {
+    return
+  }
+
+  try {
+    const session = await progressStore.getLatestSession(activeLibrary.value.libraryId)
+
+    sessionInfo.value = evaluateSession(session, activeLibrary.value, originalQuestions.value)
+  } catch (error) {
+    persistenceWarning.value = `Lernrunde konnte nicht gelesen werden: ${error.message}`
+  }
+}
+
+const sessionPanel = computed(() => {
+  const info = sessionInfo.value
+
+  if (!info || info.status === SESSION_STATUS.NONE) {
+    return null
+  }
+
+  if (info.status === SESSION_STATUS.COMPLETED) {
+    return {
+      title: 'Lernrunde abgeschlossen',
+      text: `Letzte Runde: ${info.stats.correctCount} richtig, ${info.stats.incorrectCount} falsch von ${info.stats.totalCount} Fragen.`,
+      discardLabel: 'Neue Runde starten',
+    }
+  }
+
+  if (info.status === SESSION_STATUS.RESUMABLE) {
+    const { stats } = info
+
+    return {
+      title: 'Lernrunde läuft',
+      text:
+        `Frage ${info.currentIndex + 1} von ${stats.totalCount} · ${stats.answeredCount} beantwortet · ` +
+        `${stats.correctCount} richtig · ${stats.incorrectCount} falsch · ${stats.remainingCount} offen`,
+      discardLabel: 'Aktuelle Runde verwerfen und neu starten',
+    }
+  }
+
+  const reasons = {
+    hashChanged: 'Die Datei hat einen anderen Fragenstand als zu Beginn der Runde.',
+    questionsChanged: `Die Fragen dieser Datei passen nicht zur gespeicherten Runde (${info.missingQuestionIds?.length ?? 0} fehlen, ${info.extraQuestionIds?.length ?? 0} neu).`,
+    currentQuestionMissing: 'Die gespeicherte Position ist nicht auffindbar.',
+    invalidSession: 'Die gespeicherte Runde ist nicht lesbar.',
+  }
+
+  return {
+    title: 'Lernrunde kann nicht fortgesetzt werden',
+    text:
+      `${reasons[info.reason]} Fortsetzen ist erst nach einer Aktualisierung möglich, ` +
+      'die in einer späteren Phase unterstützt wird. Die Runde bleibt gespeichert; ' +
+      'dein dauerhafter Fortschritt ist nicht betroffen.',
+    discardLabel: 'Runde verwerfen und neu starten',
+  }
+})
 
 async function refreshLibrarySummary() {
   librarySummary.value = null
@@ -355,6 +576,8 @@ async function registerV2Library(library) {
 async function loadPrivateQuestions({ questions: importedQuestions, fileName, library = null }) {
   importMessage.value = null
   persistenceWarning.value = ''
+  sessionInfo.value = null
+  activeSessionId.value = null
 
   if (library) {
     if (!(await registerV2Library(library))) {
@@ -374,6 +597,7 @@ async function loadPrivateQuestions({ questions: importedQuestions, fileName, li
   isQuizStarted.value = false
   resetQuizProgress()
   await refreshLibrarySummary()
+  await refreshSessionInfo()
 }
 
 onBeforeUnmount(() => progressStore.close())
@@ -423,7 +647,24 @@ onBeforeUnmount(() => progressStore.close())
         </ul>
       </section>
 
-      <section class="start-card">
+      <section v-if="sessionPanel" class="start-card" aria-label="Lernrunde">
+        <h2>{{ sessionPanel.title }}</h2>
+        <p>{{ sessionPanel.text }}</p>
+
+        <button
+          v-if="sessionInfo.status === 'resumable'"
+          class="start-button"
+          type="button"
+          @click="resumeLearningSession"
+        >
+          Lernrunde fortsetzen
+        </button>
+        <button class="secondary-button" type="button" @click="startLearningSession">
+          {{ sessionPanel.discardLabel }}
+        </button>
+      </section>
+
+      <section v-else class="start-card">
         <h2>Quiz bereit</h2>
         <p>
           Du kannst mit den öffentlichen Beispiel-Fragen starten oder vorher eine

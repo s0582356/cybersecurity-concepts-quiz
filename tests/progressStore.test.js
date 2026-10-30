@@ -67,7 +67,7 @@ describe('storage initialization', () => {
 
     expect(await store.getStorageSchemaVersion()).toBe(1)
     expect(STORAGE_SCHEMA_VERSION).toBe(1)
-    expect(DB_VERSION).toBe(1)
+    expect(DB_VERSION).toBe(2)
   })
 
   it('rejects an unknown storageSchemaVersion in a controlled way', async () => {

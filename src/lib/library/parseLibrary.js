@@ -88,6 +88,8 @@ function toQuizQuestion(question, libraryId) {
     options,
     correctAnswer: german.optionText[question.correctOptionKey],
     explanation: german.explanation,
+    // Keys a–d sind lokal zur Frage; nur für Optionsreihenfolge/Auswahl innerhalb derselben Frage.
+    optionTextByKey: Object.fromEntries(OPTION_KEYS.map((key) => [key, german.optionText[key]])),
   }
 }
 

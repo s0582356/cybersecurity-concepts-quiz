@@ -92,6 +92,8 @@ Private question banks can be loaded locally through the browser file picker as 
 
 For V2 libraries (JSON objects with a `libraryId`), the browser additionally stores learning progress locally in IndexedDB: only the library identity (ID, version, index hash) and per-question counters keyed by the stable question ID. Question texts, answer options, explanations, and the chosen answers are never stored. V1 question arrays are not persisted.
 
+V2 learning rounds can be resumed: the browser also stores the current round (the question order as stable question IDs, the current position, the round score and streak, and — for the question currently shown — the shown option order and chosen option key). After a reload, load the same library file again and choose "Lernrunde fortsetzen".
+
 Private local study material should remain outside the public source code and must not be committed, pushed, deployed, or shown in screenshots.
 
 ## Learning Workflow

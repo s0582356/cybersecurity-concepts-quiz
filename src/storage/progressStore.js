@@ -5,17 +5,24 @@
 // - STORAGE_SCHEMA_VERSION Version des Datenmodells in den Stores (meta-Eintrag)
 // - libraryVersion         Version einer Fragebibliothek (steht in der Library-Datei)
 //
-// Gespeichert werden nur IDs, Zähler und Zeitstempel – nie Fragen, Optionstexte
-// oder gewählte Antworten.
+// Gespeichert werden nur IDs, Zähler, Zeitstempel und Rundenzustand – nie Fragen,
+// Optionstexte oder Erklärungen.
+//
+// Phase 2B: neuer Object Store `sessions` (additiv). DB_VERSION steigt auf 2, weil nur
+// dadurch der Store angelegt wird; das Datenmodell der bestehenden Stores bleibt
+// unverändert, daher bleibt STORAGE_SCHEMA_VERSION = 1 (keine Datenmigration nötig).
+
+import { advanceSession, applyAnswer, completeSession } from '../domain/session.js'
 
 export const DB_NAME = 'cybersecurity-concepts-quiz'
-export const DB_VERSION = 1
+export const DB_VERSION = 2
 export const STORAGE_SCHEMA_VERSION = 1
 
 const STORE_META = 'meta'
 const STORE_LIBRARIES = 'libraries'
 const STORE_PROGRESS = 'progress'
-const INDEX_PROGRESS_BY_LIBRARY = 'byLibrary'
+const STORE_SESSIONS = 'sessions'
+const INDEX_BY_LIBRARY = 'byLibrary'
 const META_SCHEMA_KEY = 'storageSchemaVersion'
 
 export class StorageUnavailableError extends Error {
@@ -65,7 +72,12 @@ function upgradeDatabase(database) {
     const progress = database.createObjectStore(STORE_PROGRESS, {
       keyPath: ['libraryId', 'questionId'],
     })
-    progress.createIndex(INDEX_PROGRESS_BY_LIBRARY, 'libraryId')
+    progress.createIndex(INDEX_BY_LIBRARY, 'libraryId')
+  }
+
+  if (!database.objectStoreNames.contains(STORE_SESSIONS)) {
+    const sessions = database.createObjectStore(STORE_SESSIONS, { keyPath: 'sessionId' })
+    sessions.createIndex(INDEX_BY_LIBRARY, 'libraryId')
   }
 }
 
@@ -222,7 +234,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       db()
         .transaction(STORE_PROGRESS)
         .objectStore(STORE_PROGRESS)
-        .index(INDEX_PROGRESS_BY_LIBRARY)
+        .index(INDEX_BY_LIBRARY)
         .getAll(libraryId),
     )
   }
@@ -253,6 +265,122 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     return next
   }
 
+  // --- Sessions (Phase 2B): höchstens eine Session je Bibliothek ---
+
+  async function getLatestSession(libraryId) {
+    requireString(libraryId, 'libraryId')
+
+    const sessions = await requestResult(
+      db()
+        .transaction(STORE_SESSIONS)
+        .objectStore(STORE_SESSIONS)
+        .index(INDEX_BY_LIBRARY)
+        .getAll(libraryId),
+    )
+
+    return sessions.sort((a, b) => b.sessionStartedAt - a.sessionStartedAt)[0] ?? null
+  }
+
+  // Ersetzt eine vorhandene (laufende oder abgeschlossene) Session der Bibliothek.
+  // Dauerhafter Question Progress bleibt unberührt.
+  async function startNewSession(session) {
+    requireString(session?.sessionId, 'sessionId')
+    requireString(session.libraryId, 'libraryId')
+
+    const transaction = db().transaction(STORE_SESSIONS, 'readwrite')
+    const sessionStore = transaction.objectStore(STORE_SESSIONS)
+    const oldKeys = await requestResult(sessionStore.index(INDEX_BY_LIBRARY).getAllKeys(session.libraryId))
+
+    oldKeys.forEach((key) => sessionStore.delete(key))
+    sessionStore.put(session)
+    await transactionDone(transaction)
+
+    return session
+  }
+
+  async function updateSession(sessionId, transform) {
+    requireString(sessionId, 'sessionId')
+
+    const transaction = db().transaction(STORE_SESSIONS, 'readwrite')
+    const sessionStore = transaction.objectStore(STORE_SESSIONS)
+    const session = await requestResult(sessionStore.get(sessionId))
+
+    if (!session) {
+      transaction.abort()
+      throw new Error('Session nicht gefunden.')
+    }
+
+    const next = transform(session)
+    sessionStore.put(next)
+    await transactionDone(transaction)
+
+    return next
+  }
+
+  function markSessionResumed(sessionId, resumedAt = Date.now()) {
+    return updateSession(sessionId, (session) => ({ ...session, lastResumedAt: resumedAt }))
+  }
+
+  // Wechsel zur nächsten Frage; erst hier ändern sich currentQuestionId/currentIndex.
+  function advanceSessionTo({ sessionId, questionId, optionOrder = null }) {
+    return updateSession(sessionId, (session) => advanceSession(session, { questionId, optionOrder }))
+  }
+
+  function completeSessionById(sessionId, completedAt = Date.now()) {
+    return updateSession(sessionId, (session) => completeSession(session, completedAt))
+  }
+
+  // Antwort-Ereignis: Lebenszeit-Progress UND Session-Stand in EINER Transaktion über beide
+  // Stores. Entweder beides oder nichts wird geschrieben; eine in der Session bereits
+  // beantwortete Frage wird nie doppelt gezählt (auch nicht nach Reload/Wiederholung).
+  async function recordSessionAnswer({
+    sessionId,
+    libraryId,
+    questionId,
+    isCorrect,
+    selectedOptionKey = null,
+    optionOrder = null,
+    answeredAt = Date.now(),
+  }) {
+    requireString(sessionId, 'sessionId')
+    requireString(libraryId, 'libraryId')
+    requireString(questionId, 'questionId')
+
+    const transaction = db().transaction([STORE_PROGRESS, STORE_SESSIONS], 'readwrite')
+    const sessionStore = transaction.objectStore(STORE_SESSIONS)
+    const progressStore = transaction.objectStore(STORE_PROGRESS)
+    const [session, previous] = await Promise.all([
+      requestResult(sessionStore.get(sessionId)),
+      requestResult(progressStore.get([libraryId, questionId])),
+    ])
+
+    const result = session?.libraryId === libraryId
+      ? applyAnswer(session, { questionId, isCorrect, selectedOptionKey, optionOrder })
+      : { applied: false, reason: 'noSession' }
+
+    if (!result.applied) {
+      await transactionDone(transaction)
+      return { recorded: false, reason: result.reason }
+    }
+
+    const progress = {
+      libraryId,
+      questionId,
+      attempts: (previous?.attempts ?? 0) + 1,
+      correctCount: (previous?.correctCount ?? 0) + (isCorrect ? 1 : 0),
+      incorrectCount: (previous?.incorrectCount ?? 0) + (isCorrect ? 0 : 1),
+      lastResult: isCorrect ? 'correct' : 'incorrect',
+      answered: true,
+      lastAnsweredAt: answeredAt,
+    }
+
+    progressStore.put(progress)
+    sessionStore.put(result.session)
+    await transactionDone(transaction)
+
+    return { recorded: true, progress, session: result.session }
+  }
+
   return {
     initialize,
     close,
@@ -263,5 +391,11 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     upsertQuestionProgress,
     listProgressForLibrary,
     recordAnswer,
+    getLatestSession,
+    startNewSession,
+    markSessionResumed,
+    advanceSessionTo,
+    completeSessionById,
+    recordSessionAnswer,
   }
 }
