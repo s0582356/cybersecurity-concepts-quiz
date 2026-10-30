@@ -9,6 +9,8 @@ export function makeSyntheticLibrary({
   activeQuestionIndexHash = SYNTHETIC_HASH,
   count = 4,
   idPrefix = 'sec-a30',
+  contentRevisions = {},
+  omitIds = [],
 } = {}) {
   const questions = Array.from({ length: count }, (_, index) => {
     const number = String(index + 1).padStart(4, '0')
@@ -26,7 +28,7 @@ export function makeSyntheticLibrary({
       questionType: 'concept',
       difficulty: 'medium',
       correctOptionKey,
-      contentRevision: 1,
+      contentRevision: contentRevisions[`${idPrefix}-${number}`] ?? 1,
       localized: {
         de: {
           question: `Synthetische Frage ${number}?`,
@@ -45,6 +47,8 @@ export function makeSyntheticLibrary({
     }
   })
 
+  const kept = questions.filter((question) => !omitIds.includes(question.id))
+
   return {
     schemaVersion: '2.0.0',
     libraryId,
@@ -52,9 +56,9 @@ export function makeSyntheticLibrary({
     title: 'Synthetische Testbibliothek',
     languageSupport: ['de'],
     sourceSections: [30],
-    questionCount: count,
+    questionCount: kept.length,
     activeQuestionIndexHash,
-    questions,
+    questions: kept,
   }
 }
 

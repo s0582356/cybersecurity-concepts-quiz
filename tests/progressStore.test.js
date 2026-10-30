@@ -112,6 +112,7 @@ describe('library import', () => {
       libraryId: library.libraryId,
       libraryVersion: '1.0.1',
       activeQuestionIndexHash: HASH_A,
+      questionRevisions: library.questionRevisions,
       firstImportedAt: 1000,
       lastAccessedAt: 1000,
     })
@@ -193,6 +194,7 @@ describe('library import', () => {
       libraryId: original.libraryId,
       libraryVersion: '1.0.0',
       activeQuestionIndexHash: HASH_A,
+      questionRevisions: original.questionRevisions,
       firstImportedAt: 1000,
       lastAccessedAt: 1000,
     })

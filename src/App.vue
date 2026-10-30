@@ -15,7 +15,12 @@ import {
   shuffled,
 } from './domain/session.js'
 import { createProgressStore } from './storage/progressStore.js'
-import { IMPORT_STATUS, registerLibraryImport } from './storage/libraryImport.js'
+import {
+  CHANGE_KIND,
+  IMPORT_STATUS,
+  applyLibraryUpdate,
+  registerLibraryImport,
+} from './storage/libraryImport.js'
 
 const questions = ref(sampleQuestions)
 const questionBankName = ref('Öffentliche Beispiel-Fragen')
@@ -41,6 +46,8 @@ const persistenceWarning = ref('')
 const librarySummary = ref(null)
 // Phase 2B: Resume-Zustand der V2-Lernrunde (getrennt vom dauerhaften Question Progress).
 const sessionInfo = ref(null)
+// Phase 2C: erkanntes Library-Update, das noch nicht geladen wurde (wartet auf Entscheidung/bleibt blockiert).
+const pendingUpdate = ref(null)
 const activeSessionId = ref(null)
 let storageReady = null
 let pendingWrites = Promise.resolve()
@@ -278,7 +285,13 @@ async function resumeLearningSession() {
     const key = info.currentState?.selectedOptionKey
 
     isAnswered.value = true
-    selectedAnswer.value = key ? (current.optionTextByKey?.[key] ?? null) : null
+    // Ohne gespeicherte Auswahl (z. B. Frage seit der Antwort überarbeitet) wird nur das
+    // Ergebnis gezeigt, nie eine alte Auswahl als aktuelle dargestellt.
+    selectedAnswer.value = key
+      ? (current.optionTextByKey?.[key] ?? null)
+      : correctIds.has(info.currentQuestionId)
+        ? current.correctAnswer
+        : null
   }
 
   activeSessionId.value = session.sessionId
@@ -430,7 +443,13 @@ function persistAnswer(question, isCorrect, option) {
   }
 
   const sessionId = isReviewMode.value ? null : activeSessionId.value
-  const answer = { libraryId: question.libraryId, questionId: question.id, isCorrect }
+  const answer = {
+    libraryId: question.libraryId,
+    questionId: question.id,
+    isCorrect,
+    // Revision, bei der geantwortet wurde (nur Information, keine Wertungsregel).
+    answeredAtRevision: question.contentRevision ?? null,
+  }
 
   queueWrite(async () => {
     // Antwort und Rundenstand werden gemeinsam in einer Transaktion geschrieben.
@@ -503,6 +522,7 @@ const sessionPanel = computed(() => {
   const reasons = {
     hashChanged: 'Die Datei hat einen anderen Fragenstand als zu Beginn der Runde.',
     questionsChanged: `Die Fragen dieser Datei passen nicht zur gespeicherten Runde (${info.missingQuestionIds?.length ?? 0} fehlen, ${info.extraQuestionIds?.length ?? 0} neu).`,
+    revisionsChanged: `${info.revisedQuestionIds?.length ?? 0} Fragen wurden seit Rundenstart überarbeitet.`,
     currentQuestionMissing: 'Die gespeicherte Position ist nicht auffindbar.',
     invalidSession: 'Die gespeicherte Runde ist nicht lesbar.',
   }
@@ -545,6 +565,42 @@ const importMessages = {
     'Bekannte Bibliothek in neuerer Version erkannt. Gespeicherter Fortschritt bleibt erhalten.',
 }
 
+const UPDATE_INTRO =
+  'Diese Bibliothek wurde aktualisiert. Dein bisheriger Lernfortschritt bleibt gespeichert, ' +
+  'aber die aktuelle Lernrunde kann erst nach einer Fortschrittsmigration fortgesetzt werden.'
+
+function describeUpdate({ changeKind, change }) {
+  const count = (list) => list?.length ?? 0
+
+  if (changeKind === CHANGE_KIND.REVISIONS_ONLY) {
+    return {
+      compatible: true,
+      text:
+        `${UPDATE_INTRO} ${count(change.revised)} Fragen wurden überarbeitet; dein Fortschritt dazu bleibt erhalten. ` +
+        'Du kannst die Aktualisierung bewusst übernehmen. Die Datei wurde noch nicht geladen.',
+    }
+  }
+
+  if (changeKind === CHANGE_KIND.QUESTIONS_ADDED) {
+    return {
+      compatible: true,
+      text:
+        `${UPDATE_INTRO} ${count(change.added)} Fragen sind neu (sie starten ohne Fortschritt)` +
+        (count(change.revised) > 0 ? `, ${count(change.revised)} wurden überarbeitet` : '') +
+        '. Eine laufende Lernrunde kann danach nicht fortgesetzt, nur neu gestartet werden. ' +
+        'Die Datei wurde noch nicht geladen.',
+    }
+  }
+
+  return {
+    compatible: false,
+    text:
+      `${UPDATE_INTRO} Diese Änderung kann in dieser App-Version noch nicht übernommen werden ` +
+      '(z. B. entfernte Fragen oder eine abweichende Datei). Die Datei wurde nicht geladen; ' +
+      'Fortschritt und Lernrunde bleiben unverändert gespeichert.',
+  }
+}
+
 // Gibt false zurück, wenn der Import kontrolliert gestoppt wird.
 async function registerV2Library(library) {
   if (!(await ensureStorage())) {
@@ -555,13 +611,10 @@ async function registerV2Library(library) {
     const result = await registerLibraryImport(progressStore, library)
 
     if (result.status === IMPORT_STATUS.UPDATE_REQUIRES_MIGRATION) {
-      importMessage.value = {
-        type: 'error',
-        text:
-          'Diese Datei hat einen anderen Fragenstand als die gespeicherte Version dieser Bibliothek. ' +
-          'Eine Aktualisierung mit Fortschrittsübernahme wird noch nicht unterstützt. ' +
-          'Die Datei wurde nicht geladen, dein gespeicherter Fortschritt bleibt unverändert.',
-      }
+      const description = describeUpdate(result)
+
+      importMessage.value = { type: 'error', text: description.text }
+      pendingUpdate.value = description.compatible ? { library, ...description } : null
       return false
     }
 
@@ -576,11 +629,17 @@ async function registerV2Library(library) {
 async function loadPrivateQuestions({ questions: importedQuestions, fileName, library = null }) {
   importMessage.value = null
   persistenceWarning.value = ''
+  pendingUpdate.value = null
   sessionInfo.value = null
   activeSessionId.value = null
 
   if (library) {
     if (!(await registerV2Library(library))) {
+      // Kontrolliert gestoppt: Datei merken, falls das Update bewusst übernommen werden darf.
+      if (pendingUpdate.value) {
+        pendingUpdate.value = { ...pendingUpdate.value, questions: importedQuestions, fileName }
+      }
+
       return
     }
 
@@ -590,6 +649,10 @@ async function loadPrivateQuestions({ questions: importedQuestions, fileName, li
     librarySummary.value = null
   }
 
+  await showLoadedBank(importedQuestions, fileName)
+}
+
+async function showLoadedBank(importedQuestions, fileName) {
   originalQuestions.value = importedQuestions
   questions.value = shuffleOptionsForQuestions(importedQuestions)
   questionBankName.value = `Private Fragebank: ${fileName}`
@@ -598,6 +661,32 @@ async function loadPrivateQuestions({ questions: importedQuestions, fileName, li
   resetQuizProgress()
   await refreshLibrarySummary()
   await refreshSessionInfo()
+}
+
+// Bewusste Entscheidung des Nutzers: kompatible Änderung übernehmen (Fortschritt bleibt, nichts wird kopiert).
+async function confirmLibraryUpdate() {
+  const pending = pendingUpdate.value
+
+  if (!pending) {
+    return
+  }
+
+  try {
+    await pendingWrites
+    await applyLibraryUpdate(progressStore, pending.library)
+  } catch (error) {
+    importMessage.value = { type: 'error', text: `Aktualisierung nicht möglich: ${error.message}` }
+    pendingUpdate.value = null
+    return
+  }
+
+  pendingUpdate.value = null
+  importMessage.value = {
+    type: 'info',
+    text: `Bibliothek auf Version ${pending.library.libraryVersion} aktualisiert. Dein Fortschritt bleibt erhalten.`,
+  }
+  activeLibrary.value = pending.library
+  await showLoadedBank(pending.questions, pending.fileName)
 }
 
 onBeforeUnmount(() => progressStore.close())
@@ -627,6 +716,12 @@ onBeforeUnmount(() => progressStore.close())
       >
         {{ importMessage.text }}
       </p>
+      <section v-if="pendingUpdate" class="start-card" aria-label="Bibliotheks-Update">
+        <h2>Aktualisierung verfügbar</h2>
+        <button class="start-button" type="button" @click="confirmLibraryUpdate">
+          Aktualisierung übernehmen
+        </button>
+      </section>
       <p v-if="persistenceWarning" class="library-message library-message-warning" role="alert">
         {{ persistenceWarning }}
       </p>

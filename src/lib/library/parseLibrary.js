@@ -88,6 +88,7 @@ function toQuizQuestion(question, libraryId) {
     options,
     correctAnswer: german.optionText[question.correctOptionKey],
     explanation: german.explanation,
+    contentRevision: question.contentRevision,
     // Keys a–d sind lokal zur Frage; nur für Optionsreihenfolge/Auswahl innerhalb derselben Frage.
     optionTextByKey: Object.fromEntries(OPTION_KEYS.map((key) => [key, german.optionText[key]])),
   }
@@ -189,6 +190,10 @@ export function parseV2Library(data) {
       throw new LibraryParseError(`${label} (${question.id}): "correctOptionKey" ist ungültig.`)
     }
 
+    if (!Number.isInteger(question.contentRevision) || question.contentRevision < 1) {
+      throw new LibraryParseError(`${label} (${question.id}): "contentRevision" fehlt oder ist ungültig.`)
+    }
+
     if (!isNonEmptyString(german.explanation)) {
       throw new LibraryParseError(`${label} (${question.id}): deutsche Erklärung fehlt.`)
     }
@@ -208,6 +213,10 @@ export function parseV2Library(data) {
       activeQuestionIndexHash: data.activeQuestionIndexHash,
       title: typeof data.title === 'string' ? data.title : data.libraryId,
       sourceSections: data.sourceSections ?? [],
+      // Revisionsstand je aktiver Frage (Basis für Update-Klassifikation; nur IDs und Zahlen).
+      questionRevisions: Object.fromEntries(
+        activeQuestions.map((question) => [question.id, question.contentRevision]),
+      ),
     },
     questions: activeQuestions,
   }

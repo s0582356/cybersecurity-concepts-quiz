@@ -94,6 +94,8 @@ For V2 libraries (JSON objects with a `libraryId`), the browser additionally sto
 
 V2 learning rounds can be resumed: the browser also stores the current round (the question order as stable question IDs, the current position, the round score and streak, and — for the question currently shown — the shown option order and chosen option key). After a reload, load the same library file again and choose "Lernrunde fortsetzen".
 
+When a newer version of a library file is loaded, the app compares the question landscape: a new version with the same landscape is adopted silently; revised or added questions can be adopted after an explicit confirmation (progress is kept, nothing is copied or deleted); removed questions or a deviating file are blocked until a later migration phase.
+
 Private local study material should remain outside the public source code and must not be committed, pushed, deployed, or shown in screenshots.
 
 ## Learning Workflow

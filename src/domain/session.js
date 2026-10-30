@@ -82,6 +82,8 @@ export function createSessionRecord({
     libraryId: library.libraryId,
     libraryVersion: library.libraryVersion,
     activeQuestionIndexHash: library.activeQuestionIndexHash,
+    // Revisionsstand der Fragen bei Rundenstart (fehlt bei Runden aus Phase 2B).
+    questionRevisions: library.questionRevisions ? { ...library.questionRevisions } : null,
     sessionMode: SESSION_MODE_LEARNING,
     orderedQuestionIds: [...orderedQuestionIds],
     currentQuestionId: orderedQuestionIds[0],
@@ -172,6 +174,39 @@ export function completeSession(session, now = Date.now()) {
   return { ...session, completed: true, completedAt: now }
 }
 
+// Übernahme einer bestätigten, kompatiblen Library-Änderung in eine laufende Runde.
+// Nur bei unveränderter ID-Menge (kein Neu-Mapping der Reihenfolge); sonst bleibt die Runde
+// unverändert und weiterhin blockiert. Fragenspezifischer UI-Zustand (Optionsreihenfolge,
+// gewählte Option) einer überarbeiteten aktuellen Frage wird verworfen – Optionstexte und
+// -positionen können sich mit einer neuen contentRevision geändert haben.
+export function migrateSessionToLibrary(session, library, revisedQuestionIds = []) {
+  const ordered = new Set(session.orderedQuestionIds)
+  const sameIds =
+    library.questionRevisions &&
+    Object.keys(library.questionRevisions).length === ordered.size &&
+    Object.keys(library.questionRevisions).every((id) => ordered.has(id))
+
+  if (session.completed || !sameIds) {
+    return { migrated: false, session }
+  }
+
+  const state = session.currentQuestionState
+  const staleState = state && revisedQuestionIds.includes(state.questionId)
+
+  return {
+    migrated: true,
+    session: {
+      ...session,
+      libraryVersion: library.libraryVersion,
+      activeQuestionIndexHash: library.activeQuestionIndexHash,
+      questionRevisions: { ...library.questionRevisions },
+      currentQuestionState: staleState
+        ? { questionId: state.questionId, optionOrder: null, selectedOptionKey: null, isCorrect: state.isCorrect }
+        : state,
+    },
+  }
+}
+
 export function sessionStats(session) {
   const answeredCount = session.answeredQuestionIds.length
   const correctCount = session.correctQuestionIds.length
@@ -232,6 +267,17 @@ export function evaluateSession(session, library, questions) {
 
   if (missingQuestionIds.length > 0 || extraQuestionIds.length > 0) {
     return invalid('questionsChanged', { session, missingQuestionIds, extraQuestionIds })
+  }
+
+  // Defense in Depth zum Hash: stimmen die beim Rundenstart gemerkten Revisionen noch?
+  if (session.questionRevisions && library.questionRevisions) {
+    const revisionChanged = session.orderedQuestionIds.filter(
+      (id) => session.questionRevisions[id] !== library.questionRevisions[id],
+    )
+
+    if (revisionChanged.length > 0) {
+      return invalid('revisionsChanged', { session, revisedQuestionIds: revisionChanged })
+    }
   }
 
   // currentQuestionId gewinnt; der Index wird daraus rekonstruiert. Nur ohne gültige ID

@@ -12,7 +12,7 @@
 // dadurch der Store angelegt wird; das Datenmodell der bestehenden Stores bleibt
 // unverändert, daher bleibt STORAGE_SCHEMA_VERSION = 1 (keine Datenmigration nötig).
 
-import { advanceSession, applyAnswer, completeSession } from '../domain/session.js'
+import { advanceSession, applyAnswer, completeSession, migrateSessionToLibrary } from '../domain/session.js'
 
 export const DB_NAME = 'cybersecurity-concepts-quiz'
 export const DB_VERSION = 2
@@ -190,6 +190,10 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       activeQuestionIndexHash: state.activeQuestionIndexHash,
       firstImportedAt: state.firstImportedAt,
       lastAccessedAt: state.lastAccessedAt,
+      // additiv (Phase 2C): ältere Datensätze haben diese Felder nicht
+      // plain copy: IndexedDB kann keine Vue-Proxys klonen
+      ...(state.questionRevisions && { questionRevisions: { ...state.questionRevisions } }),
+      ...(state.updatedAt != null && { updatedAt: state.updatedAt }),
     })
     await transactionDone(transaction)
 
@@ -221,6 +225,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       lastResult: progress.lastResult,
       answered: progress.answered,
       lastAnsweredAt: progress.lastAnsweredAt,
+      ...(progress.answeredAtRevision != null && { answeredAtRevision: progress.answeredAtRevision }),
     })
     await transactionDone(transaction)
 
@@ -240,7 +245,13 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
   }
 
   // Antwort-Ereignis: lesen, zählen und schreiben in einer einzigen Transaktion.
-  async function recordAnswer({ libraryId, questionId, isCorrect, answeredAt = Date.now() }) {
+  async function recordAnswer({
+    libraryId,
+    questionId,
+    isCorrect,
+    answeredAt = Date.now(),
+    answeredAtRevision = null,
+  }) {
     requireString(libraryId, 'libraryId')
     requireString(questionId, 'questionId')
 
@@ -257,6 +268,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       lastResult: isCorrect ? 'correct' : 'incorrect',
       answered: true,
       lastAnsweredAt: answeredAt,
+      ...(answeredAtRevision != null && { answeredAtRevision }),
     }
 
     progressStore.put(next)
@@ -341,6 +353,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     selectedOptionKey = null,
     optionOrder = null,
     answeredAt = Date.now(),
+    answeredAtRevision = null,
   }) {
     requireString(sessionId, 'sessionId')
     requireString(libraryId, 'libraryId')
@@ -372,6 +385,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       lastResult: isCorrect ? 'correct' : 'incorrect',
       answered: true,
       lastAnsweredAt: answeredAt,
+      ...(answeredAtRevision != null && { answeredAtRevision }),
     }
 
     progressStore.put(progress)
@@ -379,6 +393,48 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     await transactionDone(transaction)
 
     return { recorded: true, progress, session: result.session }
+  }
+
+  // Bestätigte Übernahme einer kompatiblen Library-Änderung: Library-State und – bei unveränderter
+  // ID-Menge – die laufende Runde in EINER Transaktion. Question Progress wird nicht angefasst.
+  async function applyCompatibleUpdate({ library, previousHash, revisedQuestionIds = [], now = Date.now() }) {
+    requireString(library?.libraryId, 'libraryId')
+
+    const transaction = db().transaction([STORE_LIBRARIES, STORE_SESSIONS], 'readwrite')
+    const libraryStore = transaction.objectStore(STORE_LIBRARIES)
+    const sessionStore = transaction.objectStore(STORE_SESSIONS)
+    const [known, sessions] = await Promise.all([
+      requestResult(libraryStore.get(library.libraryId)),
+      requestResult(sessionStore.index(INDEX_BY_LIBRARY).getAll(library.libraryId)),
+    ])
+
+    if (!known || known.activeQuestionIndexHash !== previousHash) {
+      transaction.abort()
+      throw new Error('Der gespeicherte Stand hat sich geändert.')
+    }
+
+    const libraryState = {
+      ...known,
+      libraryVersion: library.libraryVersion,
+      activeQuestionIndexHash: library.activeQuestionIndexHash,
+      questionRevisions: { ...library.questionRevisions },
+      lastAccessedAt: now,
+      updatedAt: now,
+    }
+    const session = sessions.sort((a, b) => b.sessionStartedAt - a.sessionStartedAt)[0]
+    const migration = session
+      ? migrateSessionToLibrary(session, library, revisedQuestionIds)
+      : { migrated: false }
+
+    libraryStore.put(libraryState)
+
+    if (migration.migrated) {
+      sessionStore.put(migration.session)
+    }
+
+    await transactionDone(transaction)
+
+    return { libraryState, sessionMigrated: migration.migrated }
   }
 
   return {
@@ -397,5 +453,6 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     advanceSessionTo,
     completeSessionById,
     recordSessionAnswer,
+    applyCompatibleUpdate,
   }
 }
