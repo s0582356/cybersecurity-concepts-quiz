@@ -6,6 +6,8 @@
 // Der V2-Pfad prüft nur das, was die App für Phase 2A braucht; er ersetzt keinen
 // vollständigen Schema-Validator.
 
+import { parseRetiredIndex } from '../../domain/replacementMigration.js'
+
 export class LibraryParseError extends Error {
   constructor(message) {
     super(message)
@@ -229,6 +231,13 @@ export function parseQuestionFile(data) {
   }
 
   if (data !== null && typeof data === 'object') {
+    // Ersetzungs-Index (retired-index.json): Objekt, dessen Schlüssel alle Question-IDs sind.
+    const keys = Object.keys(data)
+
+    if (keys.length > 0 && !('libraryId' in data) && !('questions' in data) && keys.every((key) => QUESTION_ID_PATTERN.test(key))) {
+      return { format: 'retiredIndex', library: null, questions: [], retiredIndex: parseRetiredIndex(data) }
+    }
+
     return { format: 'v2', ...parseV2Library(data) }
   }
 

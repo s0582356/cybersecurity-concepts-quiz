@@ -207,6 +207,148 @@ export function migrateSessionToLibrary(session, library, revisedQuestionIds = [
   }
 }
 
+// Übernahme einer bestätigten Library-Änderung MIT Ersetzungen in eine laufende Runde (Phase 2D).
+// Der Contract regelt Sessions bei Replacement nicht ausdrücklich; deshalb gilt nur der sichere Fall:
+// jede retired ID der Runde hat ein Ziel **in derselben Library** (Runden sind je Library, eine Runde
+// kann keine Frage einer anderen Library enthalten). Sonst bleibt die Runde unverändert blockiert.
+//  - Ziel noch nicht in der Runde: es übernimmt den Platz der retired ID (Position bleibt stabil).
+//  - Ziel bereits in der Runde (oder von einer früheren retired ID belegt): der Platz der retired ID
+//    entfällt, das Ziel behält seinen eigenen Platz → jede Frage höchstens einmal.
+//  - Rundenguthaben: `inherit` überträgt „in dieser Runde beantwortet/richtig“ nur auf ein Ziel, das in
+//    der Runde noch nicht beantwortet ist (kein zweites Zählen); `reset` und entfallene Plätze geben
+//    kein Guthaben weiter. Zähler und Serien werden aus dem verbleibenden Verlauf neu abgeleitet
+//    (`deriveStreaks`), damit entferntes Guthaben nicht als Serie fortwirkt.
+//  - Fragenspezifischer UI-Zustand (Auswahl, Optionsreihenfolge) wird nie übertragen.
+export function migrateSessionReplacements(session, library, replacements = [], revisedQuestionIds = []) {
+  const blocked = (reason) => ({ migrated: false, reason, session })
+  const active = new Set(Object.keys(library.questionRevisions ?? {}))
+
+  if (session.completed || active.size === 0) {
+    return blocked('notApplicable')
+  }
+
+  const byFrom = new Map(replacements.map((replacement) => [replacement.from, replacement]))
+  const inSession = new Set(session.orderedQuestionIds)
+  const newOrder = []
+  const placed = new Set()
+  const slotTarget = new Map()
+  const dropIndex = new Map()
+
+  for (const id of session.orderedQuestionIds) {
+    if (active.has(id)) {
+      if (!placed.has(id)) {
+        newOrder.push(id)
+        placed.add(id)
+      }
+
+      continue
+    }
+
+    const replacement = byFrom.get(id)
+
+    if (!replacement || replacement.targetLibraryId !== library.libraryId || !active.has(replacement.to)) {
+      return blocked('unmappable')
+    }
+
+    if (inSession.has(replacement.to) || placed.has(replacement.to)) {
+      slotTarget.set(id, null)
+      dropIndex.set(id, newOrder.length)
+    } else {
+      slotTarget.set(id, replacement.to)
+      newOrder.push(replacement.to)
+      placed.add(replacement.to)
+    }
+  }
+
+  if (newOrder.length !== active.size || !newOrder.every((id) => active.has(id))) {
+    return blocked('questionsChanged')
+  }
+
+  const wasAnswered = new Set(session.answeredQuestionIds)
+  const wasCorrect = new Set(session.correctQuestionIds)
+  const answeredQuestionIds = []
+  const correctQuestionIds = []
+  const credit = (id, correct) => {
+    if (!answeredQuestionIds.includes(id)) {
+      answeredQuestionIds.push(id)
+
+      if (correct) {
+        correctQuestionIds.push(id)
+      }
+    }
+  }
+
+  session.answeredQuestionIds.forEach((id) => {
+    if (active.has(id)) {
+      credit(id, wasCorrect.has(id))
+      return
+    }
+
+    const target = slotTarget.get(id)
+
+    if (target && byFrom.get(id).policy === 'inherit' && !wasAnswered.has(target)) {
+      credit(target, wasCorrect.has(id))
+    }
+  })
+
+  let currentQuestionId = session.currentQuestionId
+
+  if (!active.has(currentQuestionId)) {
+    const target = slotTarget.get(currentQuestionId)
+
+    currentQuestionId = target ?? newOrder[Math.min(dropIndex.get(currentQuestionId) ?? 0, newOrder.length - 1)]
+  }
+
+  const state = session.currentQuestionState
+  const keepState =
+    state && state.questionId === currentQuestionId && !revisedQuestionIds.includes(currentQuestionId)
+
+  return {
+    migrated: true,
+    session: {
+      ...session,
+      libraryVersion: library.libraryVersion,
+      activeQuestionIndexHash: library.activeQuestionIndexHash,
+      questionRevisions: { ...library.questionRevisions },
+      orderedQuestionIds: newOrder,
+      currentQuestionId,
+      currentIndex: newOrder.indexOf(currentQuestionId),
+      currentQuestionState: keepState
+        ? state
+        : {
+            questionId: currentQuestionId,
+            optionOrder: null,
+            selectedOptionKey: null,
+            isCorrect: answeredQuestionIds.includes(currentQuestionId)
+              ? correctQuestionIds.includes(currentQuestionId)
+              : null,
+          },
+      answeredQuestionIds,
+      correctQuestionIds,
+      sessionCorrectCount: correctQuestionIds.length,
+      sessionIncorrectCount: answeredQuestionIds.length - correctQuestionIds.length,
+      ...deriveStreaks(answeredQuestionIds, correctQuestionIds),
+    },
+  }
+}
+
+// Serien aus dem Antwortverlauf der Runde. `answeredQuestionIds` ist chronologisch (jede Antwort wird
+// angehängt), `correctQuestionIds` die richtigen davon; damit entspricht das exakt der laufenden
+// Regel in `applyAnswer` (richtig: +1, falsch: 0, Bestwert = Maximum). Es gibt keine
+// Lifetime-Semantik; die Serie gehört nur zu dieser Runde.
+export function deriveStreaks(answeredQuestionIds, correctQuestionIds) {
+  const correct = new Set(correctQuestionIds)
+  let currentStreak = 0
+  let bestSessionStreak = 0
+
+  for (const id of answeredQuestionIds) {
+    currentStreak = correct.has(id) ? currentStreak + 1 : 0
+    bestSessionStreak = Math.max(bestSessionStreak, currentStreak)
+  }
+
+  return { currentStreak, bestSessionStreak }
+}
+
 export function sessionStats(session) {
   const answeredCount = session.answeredQuestionIds.length
   const correctCount = session.correctQuestionIds.length

@@ -9,8 +9,11 @@
 // Der activeQuestionIndexHash umfasst {id, status, contentRevision}; ein Hash-Wechsel
 // bedeutet daher immer eine Änderung der aktiven Fragenlandschaft.
 
+import { planReplacements } from './replacementMigration.js'
+
 export const CHANGE_KIND = {
   REVISIONS_ONLY: 'revisionsOnly',
+  QUESTIONS_REPLACED: 'questionsReplaced',
   QUESTIONS_ADDED: 'questionsAdded',
   QUESTIONS_REMOVED: 'questionsRemoved',
   REVISIONS_LOWERED: 'revisionsLowered',
@@ -19,7 +22,11 @@ export const CHANGE_KIND = {
 }
 
 // Nur diese Änderungen lassen sich ohne retired-index und ohne Replacement-Logik übernehmen.
-const COMPATIBLE_KINDS = new Set([CHANGE_KIND.REVISIONS_ONLY, CHANGE_KIND.QUESTIONS_ADDED])
+const COMPATIBLE_KINDS = new Set([
+  CHANGE_KIND.REVISIONS_ONLY,
+  CHANGE_KIND.QUESTIONS_ADDED,
+  CHANGE_KIND.QUESTIONS_REPLACED,
+])
 
 export function compareVersions(left, right) {
   const leftParts = left.split('.').map(Number)
@@ -56,13 +63,14 @@ export function diffRevisions(baseline, current) {
 }
 
 // Voraussetzung: known.activeQuestionIndexHash !== library.activeQuestionIndexHash
-export function classifyHashChange(known, library) {
+export function classifyHashChange(known, library, { retiredIndex = null, otherStates = [] } = {}) {
   const versionRelation = compareVersions(library.libraryVersion, known.libraryVersion)
-  const result = (changeKind, change = null) => ({
+  const result = (changeKind, change = null, extra = {}) => ({
     changeKind,
     change,
     versionRelation,
     compatible: COMPATIBLE_KINDS.has(changeKind),
+    ...extra,
   })
 
   // Ohne gespeicherten Revisionsstand (Zustand aus Phase 2A/2B) lässt sich nichts sicher vergleichen.
@@ -77,12 +85,16 @@ export function classifyHashChange(known, library) {
     return result(CHANGE_KIND.UNEXPECTED_HASH_CHANGE, change)
   }
 
-  if (change.removed.length > 0) {
-    return result(CHANGE_KIND.QUESTIONS_REMOVED, change)
-  }
-
   if (change.lowered.length > 0) {
     return result(CHANGE_KIND.REVISIONS_LOWERED, change)
+  }
+
+  if (change.removed.length > 0) {
+    // Entfernte Fragen sind nur übernehmbar, wenn der Ersetzungs-Index sie vollständig erklärt.
+    const plan = planReplacements({ removedIds: change.removed, retiredIndex, library, otherStates })
+    const explained = plan.unexplained.length === 0 && plan.problems.length === 0
+
+    return result(explained ? CHANGE_KIND.QUESTIONS_REPLACED : CHANGE_KIND.QUESTIONS_REMOVED, change, plan)
   }
 
   if (change.added.length === 0 && change.revised.length === 0) {

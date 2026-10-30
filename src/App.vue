@@ -48,6 +48,8 @@ const librarySummary = ref(null)
 const sessionInfo = ref(null)
 // Phase 2C: erkanntes Library-Update, das noch nicht geladen wurde (wartet auf Entscheidung/bleibt blockiert).
 const pendingUpdate = ref(null)
+// Phase 2D: Ersetzungs-Index (nur IDs und Policies; wird lokal geladen, nie im Repo mitgeliefert).
+const retiredIndex = ref(null)
 const activeSessionId = ref(null)
 let storageReady = null
 let pendingWrites = Promise.resolve()
@@ -414,7 +416,11 @@ function ensureStorage() {
   if (!storageReady) {
     storageReady = progressStore
       .initialize()
-      .then(() => true)
+      .then(async () => {
+        retiredIndex.value = await progressStore.getRetiredIndex()
+
+        return true
+      })
       .catch((error) => {
         persistenceWarning.value = `Fortschritt wird nicht gespeichert: ${error.message}`
         return false
@@ -530,8 +536,8 @@ const sessionPanel = computed(() => {
   return {
     title: 'Lernrunde kann nicht fortgesetzt werden',
     text:
-      `${reasons[info.reason]} Fortsetzen ist erst nach einer Aktualisierung möglich, ` +
-      'die in einer späteren Phase unterstützt wird. Die Runde bleibt gespeichert; ' +
+      `${reasons[info.reason]} Diese Runde kann nicht mehr angepasst werden und lässt sich nur ` +
+      'verwerfen und neu starten. Sie bleibt bis dahin gespeichert; ' +
       'dein dauerhafter Fortschritt ist nicht betroffen.',
     discardLabel: 'Runde verwerfen und neu starten',
   }
@@ -569,8 +575,33 @@ const UPDATE_INTRO =
   'Diese Bibliothek wurde aktualisiert. Dein bisheriger Lernfortschritt bleibt gespeichert, ' +
   'aber die aktuelle Lernrunde kann erst nach einer Fortschrittsmigration fortgesetzt werden.'
 
-function describeUpdate({ changeKind, change }) {
+function describeUpdate({ changeKind, change, replacements, unexplained }) {
   const count = (list) => list?.length ?? 0
+
+  if (changeKind === CHANGE_KIND.QUESTIONS_REPLACED) {
+    const inherited = replacements.filter((replacement) => replacement.policy === 'inherit').length
+    const reset = replacements.length - inherited
+
+    return {
+      compatible: true,
+      text:
+        `${UPDATE_INTRO} ${replacements.length} Fragen wurden ersetzt: ${inherited} übernehmen den bisherigen Fortschritt ` +
+        `(gleiches Lernziel), ${reset} starten ohne Fortschritt (neues Lernziel). ` +
+        'Eine laufende Lernrunde wird nur angepasst, wenn das sicher möglich ist. ' +
+        'Du kannst die Aktualisierung bewusst übernehmen. Die Datei wurde noch nicht geladen.',
+    }
+  }
+
+  if (changeKind === CHANGE_KIND.QUESTIONS_REMOVED) {
+    return {
+      compatible: false,
+      text:
+        `${UPDATE_INTRO} ${count(change.removed)} Fragen wurden entfernt, ${count(unexplained)} davon sind durch ` +
+        'den Ersetzungs-Index nicht erklärt (Index fehlt oder die Ziel-Bibliothek ist nicht geladen). ' +
+        'Lade die Ersetzungsliste (retired-index.json) bzw. die Ziel-Bibliothek und importiere die Datei erneut. ' +
+        'Die Datei wurde nicht geladen; Fortschritt und Lernrunde bleiben unverändert gespeichert.',
+    }
+  }
 
   if (changeKind === CHANGE_KIND.REVISIONS_ONLY) {
     return {
@@ -608,7 +639,7 @@ async function registerV2Library(library) {
   }
 
   try {
-    const result = await registerLibraryImport(progressStore, library)
+    const result = await registerLibraryImport(progressStore, library, { retiredIndex: retiredIndex.value })
 
     if (result.status === IMPORT_STATUS.UPDATE_REQUIRES_MIGRATION) {
       const description = describeUpdate(result)
@@ -673,7 +704,7 @@ async function confirmLibraryUpdate() {
 
   try {
     await pendingWrites
-    await applyLibraryUpdate(progressStore, pending.library)
+    await applyLibraryUpdate(progressStore, pending.library, { retiredIndex: retiredIndex.value })
   } catch (error) {
     importMessage.value = { type: 'error', text: `Aktualisierung nicht möglich: ${error.message}` }
     pendingUpdate.value = null
@@ -687,6 +718,26 @@ async function confirmLibraryUpdate() {
   }
   activeLibrary.value = pending.library
   await showLoadedBank(pending.questions, pending.fileName)
+}
+
+async function loadRetiredIndex({ entries, fileName }) {
+  importMessage.value = null
+  persistenceWarning.value = ''
+
+  if (!(await ensureStorage())) {
+    return
+  }
+
+  try {
+    await progressStore.saveRetiredIndex(entries)
+    retiredIndex.value = entries
+    importMessage.value = {
+      type: 'info',
+      text: `Ersetzungsliste ${fileName} geladen (${Object.keys(entries).length} Einträge). Sie wird bei Bibliotheks-Updates verwendet.`,
+    }
+  } catch (error) {
+    persistenceWarning.value = `Ersetzungsliste konnte nicht gespeichert werden: ${error.message}`
+  }
 }
 
 onBeforeUnmount(() => progressStore.close())
@@ -706,7 +757,10 @@ onBeforeUnmount(() => progressStore.close())
     </section>
 
     <section v-if="!isQuizStarted" class="start-layout" aria-label="Quiz vorbereiten">
-      <PrivateQuestionImporter @questions-loaded="loadPrivateQuestions" />
+      <PrivateQuestionImporter
+        @questions-loaded="loadPrivateQuestions"
+        @retired-index-loaded="loadRetiredIndex"
+      />
 
       <p
         v-if="importMessage"

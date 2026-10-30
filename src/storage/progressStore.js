@@ -12,7 +12,14 @@
 // dadurch der Store angelegt wird; das Datenmodell der bestehenden Stores bleibt
 // unverändert, daher bleibt STORAGE_SCHEMA_VERSION = 1 (keine Datenmigration nötig).
 
-import { advanceSession, applyAnswer, completeSession, migrateSessionToLibrary } from '../domain/session.js'
+import {
+  advanceSession,
+  applyAnswer,
+  completeSession,
+  migrateSessionReplacements,
+  migrateSessionToLibrary,
+} from '../domain/session.js'
+import { applyReplacementToProgress } from '../domain/replacementMigration.js'
 
 export const DB_NAME = 'cybersecurity-concepts-quiz'
 export const DB_VERSION = 2
@@ -24,6 +31,7 @@ const STORE_PROGRESS = 'progress'
 const STORE_SESSIONS = 'sessions'
 const INDEX_BY_LIBRARY = 'byLibrary'
 const META_SCHEMA_KEY = 'storageSchemaVersion'
+const META_RETIRED_INDEX_KEY = 'retiredIndex'
 
 export class StorageUnavailableError extends Error {
   constructor(message, cause) {
@@ -106,6 +114,14 @@ function openDatabase(factory, dbName) {
       reject(new StorageUnavailableError('IndexedDB konnte nicht geöffnet werden.', error))
     }
   })
+}
+
+function abortQuietly(transaction) {
+  try {
+    transaction.abort()
+  } catch {
+    // Transaktion war bereits beendet
+  }
 }
 
 function requireString(value, name) {
@@ -226,6 +242,8 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       answered: progress.answered,
       lastAnsweredAt: progress.lastAnsweredAt,
       ...(progress.answeredAtRevision != null && { answeredAtRevision: progress.answeredAtRevision }),
+      ...(progress.inheritedFrom && { inheritedFrom: progress.inheritedFrom }),
+      ...(progress.historical && { historical: true, migratedTo: progress.migratedTo }),
     })
     await transactionDone(transaction)
 
@@ -269,6 +287,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       answered: true,
       lastAnsweredAt: answeredAt,
       ...(answeredAtRevision != null && { answeredAtRevision }),
+      ...(previous?.inheritedFrom && { inheritedFrom: previous.inheritedFrom }),
     }
 
     progressStore.put(next)
@@ -386,6 +405,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       answered: true,
       lastAnsweredAt: answeredAt,
       ...(answeredAtRevision != null && { answeredAtRevision }),
+      ...(previous?.inheritedFrom && { inheritedFrom: previous.inheritedFrom }),
     }
 
     progressStore.put(progress)
@@ -395,46 +415,149 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     return { recorded: true, progress, session: result.session }
   }
 
-  // Bestätigte Übernahme einer kompatiblen Library-Änderung: Library-State und – bei unveränderter
-  // ID-Menge – die laufende Runde in EINER Transaktion. Question Progress wird nicht angefasst.
-  async function applyCompatibleUpdate({ library, previousHash, revisedQuestionIds = [], now = Date.now() }) {
+  // --- Ersetzungs-Index (Phase 2D): nur IDs und Policies, kein Freitext ---
+
+  async function getRetiredIndex() {
+    const record = await requestResult(
+      db().transaction(STORE_META).objectStore(STORE_META).get(META_RETIRED_INDEX_KEY),
+    )
+
+    return record?.entries ?? null
+  }
+
+  async function saveRetiredIndex(entries, importedAt = Date.now()) {
+    const transaction = db().transaction(STORE_META, 'readwrite')
+
+    transaction.objectStore(STORE_META).put({
+      key: META_RETIRED_INDEX_KEY,
+      entries: JSON.parse(JSON.stringify(entries)),
+      importedAt,
+    })
+    await transactionDone(transaction)
+  }
+
+  async function listLibraryStates() {
+    return requestResult(db().transaction(STORE_LIBRARIES).objectStore(STORE_LIBRARIES).getAll())
+  }
+
+  // Wendet Ersetzungen innerhalb einer laufenden Transaktion an (siehe applyReplacementToProgress).
+  // Gelesene Datensätze werden vor dem Schreiben geprüft; ein Fehler bricht die Transaktion ab.
+  async function migrateReplacements(progressObjectStore, sourceLibraryId, replacements, now) {
+    const summary = []
+
+    for (const replacement of [...replacements].sort((a, b) => a.from.localeCompare(b.from))) {
+      const sourceKey = { libraryId: sourceLibraryId, questionId: replacement.from }
+      const targetKey = { libraryId: replacement.targetLibraryId, questionId: replacement.to }
+      const [source, target] = await Promise.all([
+        requestResult(progressObjectStore.get([sourceKey.libraryId, sourceKey.questionId])),
+        requestResult(progressObjectStore.get([targetKey.libraryId, targetKey.questionId])),
+      ])
+      const result = applyReplacementToProgress({
+        source,
+        target,
+        policy: replacement.policy,
+        sourceKey,
+        targetKey,
+        now,
+      })
+
+      if (result.source) {
+        progressObjectStore.put(result.source)
+      }
+
+      if (result.target) {
+        progressObjectStore.put(result.target)
+      }
+
+      summary.push({ from: replacement.from, to: replacement.to, outcome: result.outcome })
+    }
+
+    return summary
+  }
+
+  // Eigenständige, idempotente Ersetzung (zweiter Lauf: alles `alreadyMigrated`, keine Änderung).
+  async function applyReplacementMigration({ libraryId, replacements, now = Date.now() }) {
+    requireString(libraryId, 'libraryId')
+
+    const transaction = db().transaction(STORE_PROGRESS, 'readwrite')
+
+    try {
+      const summary = await migrateReplacements(transaction.objectStore(STORE_PROGRESS), libraryId, replacements, now)
+
+      await transactionDone(transaction)
+
+      return summary
+    } catch (error) {
+      abortQuietly(transaction)
+      throw error
+    }
+  }
+
+  // Bestätigte Übernahme einer kompatiblen Library-Änderung: Library-State, Ersetzungen und – wenn
+  // sicher möglich – die laufende Runde in EINER Transaktion. Bei jedem Fehler wird alles verworfen.
+  async function applyCompatibleUpdate({
+    library,
+    previousHash,
+    revisedQuestionIds = [],
+    replacements = [],
+    now = Date.now(),
+  }) {
     requireString(library?.libraryId, 'libraryId')
 
-    const transaction = db().transaction([STORE_LIBRARIES, STORE_SESSIONS], 'readwrite')
-    const libraryStore = transaction.objectStore(STORE_LIBRARIES)
-    const sessionStore = transaction.objectStore(STORE_SESSIONS)
-    const [known, sessions] = await Promise.all([
-      requestResult(libraryStore.get(library.libraryId)),
-      requestResult(sessionStore.index(INDEX_BY_LIBRARY).getAll(library.libraryId)),
-    ])
+    const transaction = db().transaction([STORE_LIBRARIES, STORE_SESSIONS, STORE_PROGRESS], 'readwrite')
 
-    if (!known || known.activeQuestionIndexHash !== previousHash) {
-      transaction.abort()
-      throw new Error('Der gespeicherte Stand hat sich geändert.')
+    try {
+      const libraryStore = transaction.objectStore(STORE_LIBRARIES)
+      const sessionStore = transaction.objectStore(STORE_SESSIONS)
+      const [known, sessions] = await Promise.all([
+        requestResult(libraryStore.get(library.libraryId)),
+        requestResult(sessionStore.index(INDEX_BY_LIBRARY).getAll(library.libraryId)),
+      ])
+
+      if (!known || known.activeQuestionIndexHash !== previousHash) {
+        throw new Error('Der gespeicherte Stand hat sich geändert.')
+      }
+
+      const migrated = await migrateReplacements(
+        transaction.objectStore(STORE_PROGRESS),
+        library.libraryId,
+        replacements,
+        now,
+      )
+      const session = sessions.sort((a, b) => b.sessionStartedAt - a.sessionStartedAt)[0]
+      let migration = { migrated: false }
+
+      if (session) {
+        migration =
+          replacements.length > 0
+            ? migrateSessionReplacements(session, library, replacements, revisedQuestionIds)
+            : migrateSessionToLibrary(session, library, revisedQuestionIds)
+      }
+
+      libraryStore.put({
+        ...known,
+        libraryVersion: library.libraryVersion,
+        activeQuestionIndexHash: library.activeQuestionIndexHash,
+        questionRevisions: { ...library.questionRevisions },
+        lastAccessedAt: now,
+        updatedAt: now,
+      })
+
+      if (migration.migrated) {
+        sessionStore.put(migration.session)
+      }
+
+      await transactionDone(transaction)
+
+      return {
+        libraryState: { ...known, libraryVersion: library.libraryVersion, activeQuestionIndexHash: library.activeQuestionIndexHash },
+        sessionMigrated: migration.migrated,
+        replacements: migrated,
+      }
+    } catch (error) {
+      abortQuietly(transaction)
+      throw error
     }
-
-    const libraryState = {
-      ...known,
-      libraryVersion: library.libraryVersion,
-      activeQuestionIndexHash: library.activeQuestionIndexHash,
-      questionRevisions: { ...library.questionRevisions },
-      lastAccessedAt: now,
-      updatedAt: now,
-    }
-    const session = sessions.sort((a, b) => b.sessionStartedAt - a.sessionStartedAt)[0]
-    const migration = session
-      ? migrateSessionToLibrary(session, library, revisedQuestionIds)
-      : { migrated: false }
-
-    libraryStore.put(libraryState)
-
-    if (migration.migrated) {
-      sessionStore.put(migration.session)
-    }
-
-    await transactionDone(transaction)
-
-    return { libraryState, sessionMigrated: migration.migrated }
   }
 
   return {
@@ -454,5 +577,9 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     completeSessionById,
     recordSessionAnswer,
     applyCompatibleUpdate,
+    applyReplacementMigration,
+    getRetiredIndex,
+    saveRetiredIndex,
+    listLibraryStates,
   }
 }

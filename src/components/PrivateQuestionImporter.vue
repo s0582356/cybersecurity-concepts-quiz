@@ -1,7 +1,7 @@
 <script setup>
 import { parseQuestionFile } from '../lib/library/parseLibrary.js'
 
-const emit = defineEmits(['questions-loaded'])
+const emit = defineEmits(['questions-loaded', 'retired-index-loaded'])
 
 const handleFileChange = async (event) => {
   const file = event.target.files?.[0]
@@ -13,7 +13,13 @@ const handleFileChange = async (event) => {
   try {
     const fileContent = await file.text()
     const parsedData = JSON.parse(fileContent)
-    const { questions, library } = parseQuestionFile(parsedData)
+    const { questions, library, retiredIndex } = parseQuestionFile(parsedData)
+
+    if (retiredIndex) {
+      emit('retired-index-loaded', { entries: retiredIndex, fileName: file.name })
+      event.target.value = ''
+      return
+    }
 
     emit('questions-loaded', {
       questions,
@@ -37,6 +43,7 @@ const handleFileChange = async (event) => {
         Wähle eine lokale JSON-Datei aus. Die Datei wird nur im Browser gelesen
         und nicht hochgeladen. Bei V2-Bibliotheken speichert der Browser nur
         Fortschrittsdaten (Frage-IDs und Ergebnisse), nie die Fragen selbst.
+        Hier kann auch die Ersetzungsliste (retired-index.json) geladen werden.
       </p>
     </div>
 

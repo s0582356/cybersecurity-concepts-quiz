@@ -16,7 +16,7 @@ export const IMPORT_STATUS = {
   UPDATE_REQUIRES_MIGRATION: 'updateRequiresMigration',
 }
 
-export async function registerLibraryImport(store, library, { now = Date.now() } = {}) {
+export async function registerLibraryImport(store, library, { now = Date.now(), retiredIndex = null } = {}) {
   const known = await store.getLibraryState(library.libraryId)
 
   if (!known) {
@@ -40,7 +40,7 @@ export async function registerLibraryImport(store, library, { now = Date.now() }
       status: IMPORT_STATUS.UPDATE_REQUIRES_MIGRATION,
       libraryState: known,
       reason: 'hash-changed',
-      ...classifyHashChange(known, library),
+      ...classifyHashChange(known, library, { retiredIndex, otherStates: await otherLibraryStates(store, library) }),
     }
   }
 
@@ -67,14 +67,21 @@ export async function registerLibraryImport(store, library, { now = Date.now() }
 // Bewusst bestätigte Übernahme einer kompatiblen Änderung (neue Fragen / höhere contentRevision).
 // Fortschritt wird weder gelöscht noch kopiert; eine laufende Runde wird nur migriert, wenn ihre
 // Fragen-IDs unverändert sind (keine neue Reihenfolge).
-export async function applyLibraryUpdate(store, library, { now = Date.now() } = {}) {
+async function otherLibraryStates(store, library) {
+  return (await store.listLibraryStates()).filter((state) => state.libraryId !== library.libraryId)
+}
+
+export async function applyLibraryUpdate(store, library, { now = Date.now(), retiredIndex = null } = {}) {
   const known = await store.getLibraryState(library.libraryId)
 
   if (!known || known.activeQuestionIndexHash === library.activeQuestionIndexHash) {
     throw new Error('Kein Update zu übernehmen.')
   }
 
-  const classification = classifyHashChange(known, library)
+  const classification = classifyHashChange(known, library, {
+    retiredIndex,
+    otherStates: await otherLibraryStates(store, library),
+  })
 
   if (!classification.compatible) {
     throw new Error('Diese Änderung kann noch nicht übernommen werden.')
@@ -84,6 +91,7 @@ export async function applyLibraryUpdate(store, library, { now = Date.now() } = 
     library,
     previousHash: known.activeQuestionIndexHash,
     revisedQuestionIds: classification.change.revised,
+    replacements: classification.replacements ?? [],
     now,
   })
 }
