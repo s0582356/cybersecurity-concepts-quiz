@@ -90,6 +90,8 @@ This file is intended for GitHub and deployment. It contains only original sampl
 
 Private question banks can be loaded locally through the browser file picker as JSON files. They stay on the user's device during the session and are not uploaded, stored on a server, or included in the deployed static site.
 
+For V2 libraries (JSON objects with a `libraryId`), the browser additionally stores learning progress locally in IndexedDB: only the library identity (ID, version, index hash) and per-question counters keyed by the stable question ID. Question texts, answer options, explanations, and the chosen answers are never stored. V1 question arrays are not persisted.
+
 Private local study material should remain outside the public source code and must not be committed, pushed, deployed, or shown in screenshots.
 
 ## Learning Workflow
@@ -125,6 +127,20 @@ npm run dev -- --host 0.0.0.0
 ```
 
 Then open the displayed network URL on the other device.
+
+## Tests
+
+Run the automated tests (Vitest, with `fake-indexeddb` and `jsdom`):
+
+```bash
+npm test
+```
+
+Optionally verify a local private V2 library against the parser (the file is read from the given path and never committed):
+
+```bash
+V2_PILOT_LIBRARY_PATH=/path/to/security-plus-v2-la08-sec23.json npm test
+```
 
 ## Build and Preview
 

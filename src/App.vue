@@ -1,9 +1,12 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import QuizCard from './components/QuizCard.vue'
 import ScoreBox from './components/ScoreBox.vue'
 import PrivateQuestionImporter from './components/PrivateQuestionImporter.vue'
 import sampleQuestions from './data/public/sampleQuestions.json'
+import { summarizeLibraryProgress } from './domain/progressSummary.js'
+import { createProgressStore } from './storage/progressStore.js'
+import { IMPORT_STATUS, registerLibraryImport } from './storage/libraryImport.js'
 
 const questions = ref(sampleQuestions)
 const questionBankName = ref('Öffentliche Beispiel-Fragen')
@@ -19,6 +22,16 @@ const currentStreak = ref(0)
 const bestStreak = ref(0)
 const incorrectlyAnsweredQuestions = ref([])
 const answeredQuestions = ref([])
+
+// V2-Persistenz (Phase 2A): Fortschritt je (libraryId, question.id) in IndexedDB.
+// V1-Banken bleiben ohne Persistenz.
+const progressStore = createProgressStore()
+const activeLibrary = ref(null)
+const importMessage = ref(null)
+const persistenceWarning = ref('')
+const librarySummary = ref(null)
+let storageReady = null
+let pendingWrites = Promise.resolve()
 
 const totalQuestions = computed(() => questions.value.length)
 const wrongAnswerCount = computed(() => totalQuestions.value - score.value)
@@ -115,6 +128,10 @@ const learningRecommendation = computed(() => {
 })
 
 function getQuestionKey(question) {
+  if (question.libraryId) {
+    return `${question.libraryId}::${question.id}`
+  }
+
   return [
     question.id,
     question.category,
@@ -183,6 +200,8 @@ function selectAnswer(option) {
     isCorrect,
   })
 
+  persistAnswer(currentQuestion.value, isCorrect)
+
   if (isCorrect) {
     score.value++
     currentStreak.value++
@@ -238,16 +257,126 @@ function showQuestionBankSelection() {
   isReviewMode.value = false
   isQuizStarted.value = false
   resetQuizProgress()
+  refreshLibrarySummary()
 }
 
-function loadPrivateQuestions({ questions: importedQuestions, fileName }) {
+function ensureStorage() {
+  if (!storageReady) {
+    storageReady = progressStore
+      .initialize()
+      .then(() => true)
+      .catch((error) => {
+        persistenceWarning.value = `Fortschritt wird nicht gespeichert: ${error.message}`
+        return false
+      })
+  }
+
+  return storageReady
+}
+
+function persistAnswer(question, isCorrect) {
+  if (!question.libraryId || !activeLibrary.value) {
+    return
+  }
+
+  pendingWrites = pendingWrites
+    .then(async () => {
+      if (!(await storageReady)) {
+        return
+      }
+
+      await progressStore.recordAnswer({
+        libraryId: question.libraryId,
+        questionId: question.id,
+        isCorrect,
+      })
+    })
+    .catch((error) => {
+      persistenceWarning.value = `Fortschritt konnte nicht gespeichert werden: ${error.message}`
+    })
+}
+
+async function refreshLibrarySummary() {
+  librarySummary.value = null
+
+  if (!activeLibrary.value) {
+    return
+  }
+
+  await pendingWrites
+
+  if (!(await storageReady)) {
+    return
+  }
+
+  try {
+    const records = await progressStore.listProgressForLibrary(activeLibrary.value.libraryId)
+    librarySummary.value = summarizeLibraryProgress(originalQuestions.value, records)
+  } catch (error) {
+    persistenceWarning.value = `Fortschritt konnte nicht gelesen werden: ${error.message}`
+  }
+}
+
+const importMessages = {
+  [IMPORT_STATUS.NEW]: 'Neue Bibliothek erkannt. Dein Fortschritt wird ab jetzt lokal im Browser gespeichert.',
+  [IMPORT_STATUS.KNOWN]: 'Bekannte Bibliothek erkannt. Gespeicherter Fortschritt wird verwendet.',
+  [IMPORT_STATUS.VERSION_UPDATED]:
+    'Bekannte Bibliothek in neuerer Version erkannt. Gespeicherter Fortschritt bleibt erhalten.',
+}
+
+// Gibt false zurück, wenn der Import kontrolliert gestoppt wird.
+async function registerV2Library(library) {
+  if (!(await ensureStorage())) {
+    return true
+  }
+
+  try {
+    const result = await registerLibraryImport(progressStore, library)
+
+    if (result.status === IMPORT_STATUS.UPDATE_REQUIRES_MIGRATION) {
+      importMessage.value = {
+        type: 'error',
+        text:
+          'Diese Datei hat einen anderen Fragenstand als die gespeicherte Version dieser Bibliothek. ' +
+          'Eine Aktualisierung mit Fortschrittsübernahme wird noch nicht unterstützt. ' +
+          'Die Datei wurde nicht geladen, dein gespeicherter Fortschritt bleibt unverändert.',
+      }
+      return false
+    }
+
+    importMessage.value = { type: 'info', text: importMessages[result.status] }
+    return true
+  } catch (error) {
+    persistenceWarning.value = `Fortschritt wird nicht gespeichert: ${error.message}`
+    return true
+  }
+}
+
+async function loadPrivateQuestions({ questions: importedQuestions, fileName, library = null }) {
+  importMessage.value = null
+  persistenceWarning.value = ''
+
+  if (library) {
+    if (!(await registerV2Library(library))) {
+      return
+    }
+
+    activeLibrary.value = library
+  } else {
+    activeLibrary.value = null
+    librarySummary.value = null
+  }
+
   originalQuestions.value = importedQuestions
   questions.value = shuffleOptionsForQuestions(importedQuestions)
   questionBankName.value = `Private Fragebank: ${fileName}`
   isReviewMode.value = false
   isQuizStarted.value = false
   resetQuizProgress()
+  await refreshLibrarySummary()
 }
+
+onBeforeUnmount(() => progressStore.close())
 </script>
 
 <template>
@@ -265,6 +394,34 @@ function loadPrivateQuestions({ questions: importedQuestions, fileName }) {
 
     <section v-if="!isQuizStarted" class="start-layout" aria-label="Quiz vorbereiten">
       <PrivateQuestionImporter @questions-loaded="loadPrivateQuestions" />
+
+      <p
+        v-if="importMessage"
+        class="library-message"
+        :class="`library-message-${importMessage.type}`"
+        role="status"
+      >
+        {{ importMessage.text }}
+      </p>
+      <p v-if="persistenceWarning" class="library-message library-message-warning" role="alert">
+        {{ persistenceWarning }}
+      </p>
+
+      <section v-if="librarySummary" class="start-card" aria-label="Gespeicherter Fortschritt">
+        <h2>Gespeicherter Fortschritt</h2>
+        <p>
+          Beantwortet: {{ librarySummary.answeredCount }} von {{ librarySummary.totalQuestions }}
+          · zuletzt richtig: {{ librarySummary.lastCorrectCount }}
+          · zuletzt falsch: {{ librarySummary.lastIncorrectCount }}
+          · Versuche gesamt: {{ librarySummary.totalAttempts }}
+        </p>
+        <ul v-if="librarySummary.answeredCount > 0" class="progress-category-list">
+          <li v-for="category in librarySummary.categories" :key="category.name">
+            {{ category.name }}: {{ category.answered }}/{{ category.total }} beantwortet,
+            {{ category.lastCorrect }} zuletzt richtig
+          </li>
+        </ul>
+      </section>
 
       <section class="start-card">
         <h2>Quiz bereit</h2>
