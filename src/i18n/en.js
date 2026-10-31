@@ -98,13 +98,13 @@ export const en = {
 
   // --- Update descriptions (phase 2C/2D) ---
   'update.intro':
-    'This library has been updated. Your learning progress stays saved, but the current learning round can only be continued after a progress migration.',
+    'This library has been updated. Your learning progress stays saved.',
   'update.replaced':
     '{intro} {count} questions were replaced: {inherited} keep the previous progress (same learning goal), {reset} start without progress (new learning goal). A running round is only adjusted if that is safely possible. You can apply the update deliberately. The file has not been loaded yet.',
   'update.removed':
     '{intro} {count} questions were removed, {unexplained} of them are not explained by the replacement index (index missing or the target library is not loaded). Load the replacement list (retired-index.json) or the target library and import the file again. The file was not loaded; progress and learning round stay unchanged.',
   'update.revisions':
-    '{intro} {count} questions were revised; your progress for them is kept. You can apply the update deliberately. The file has not been loaded yet.',
+    '{intro} {count} questions were revised; your progress for them is kept. After applying the update, the running learning round can be continued; only the concrete selection of a revised current question is reset. You can apply the update deliberately. The file has not been loaded yet.',
   'update.added':
     '{intro} {count} questions are new (they start without progress){revised}. A running round stays unchanged; the new questions join from the next round. The file has not been loaded yet.',
   'update.addedRevised': ', {count} were revised',

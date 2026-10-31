@@ -100,13 +100,13 @@ export const de = {
 
   // --- Update-Beschreibungen (Phase 2C/2D) ---
   'update.intro':
-    'Diese Bibliothek wurde aktualisiert. Dein bisheriger Lernfortschritt bleibt gespeichert, aber die aktuelle Lernrunde kann erst nach einer Fortschrittsmigration fortgesetzt werden.',
+    'Diese Bibliothek wurde aktualisiert. Dein bisheriger Lernfortschritt bleibt gespeichert.',
   'update.replaced':
     '{intro} {count} Fragen wurden ersetzt: {inherited} übernehmen den bisherigen Fortschritt (gleiches Lernziel), {reset} starten ohne Fortschritt (neues Lernziel). Eine laufende Lernrunde wird nur angepasst, wenn das sicher möglich ist. Du kannst die Aktualisierung bewusst übernehmen. Die Datei wurde noch nicht geladen.',
   'update.removed':
     '{intro} {count} Fragen wurden entfernt, {unexplained} davon sind durch den Ersetzungs-Index nicht erklärt (Index fehlt oder die Ziel-Bibliothek ist nicht geladen). Lade die Ersetzungsliste (retired-index.json) bzw. die Ziel-Bibliothek und importiere die Datei erneut. Die Datei wurde nicht geladen; Fortschritt und Lernrunde bleiben unverändert gespeichert.',
   'update.revisions':
-    '{intro} {count} Fragen wurden überarbeitet; dein Fortschritt dazu bleibt erhalten. Du kannst die Aktualisierung bewusst übernehmen. Die Datei wurde noch nicht geladen.',
+    '{intro} {count} Fragen wurden überarbeitet; dein Fortschritt dazu bleibt erhalten. Nach der Übernahme lässt sich die laufende Lernrunde fortsetzen; nur die konkrete Auswahl einer überarbeiteten aktuellen Frage wird zurückgesetzt. Du kannst die Aktualisierung bewusst übernehmen. Die Datei wurde noch nicht geladen.',
   'update.added':
     '{intro} {count} Fragen sind neu (sie starten ohne Fortschritt){revised}. Eine laufende Lernrunde bleibt unverändert; die neuen Fragen kommen erst ab der nächsten Runde dazu. Die Datei wurde noch nicht geladen.',
   'update.addedRevised': ', {count} wurden überarbeitet',

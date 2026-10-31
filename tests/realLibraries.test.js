@@ -120,17 +120,53 @@ describe.skipIf(!root || !existsSync(root))('real pilot: multi-library import (l
     expect((await withStore((store) => store.listAllProgress())).length).toBe(4)
   }, 120000)
 
-  // Phase 2F: echte Sprachabdeckung. Erwartung wird aus den Dateien berechnet; solange kein Englisch existiert,
-  // muss die App Deutsch zeigen und das offen melden (keine behauptete Zweisprachigkeit).
-  it('measures the real language coverage and never pretends English exists', async () => {
+  // Echte Sprachabdeckung (Phase 2F, angepasst nach dem Gold-Pilot): alle Erwartungen werden aus den Dateien berechnet.
+  // Englisch gilt je Lernabschnitt nur bei vollständiger Abdeckung als "verfügbar"; eine teilweise Abdeckung (z. B. nur
+  // eine von mehreren Libraries eines Abschnitts) darf nie als volle Abschnitts-Verfügbarkeit erscheinen.
+  it('measures the real language coverage per question, library and section', async () => {
     const parsed = files.map(({ data }) => parseV2Library(data))
     const questions = parsed.flatMap((item) => item.questions)
     const coverage = coverageOf(questions)
-    const completeLibraries = parsed.filter((item) => item.library.contentCoverage.en === item.library.questionCount).length
+    const rawActive = files.flatMap(({ data }) => data.questions.filter((question) => question.status === 'active'))
+    const rawEnglish = rawActive.filter((question) => question.localized.en !== null && question.localized.en !== undefined)
+    const completeLibraries = parsed.filter((item) => item.library.contentCoverage.en === item.library.questionCount)
+    const sectionOfLibrary = new Map(parsed.map((item) => [item.library.libraryId, item.library.learningSectionId]))
+    const sections = new Map()
 
-    console.log(JSON.stringify({ languageCoverage: coverage, librariesWithCompleteEnglish: completeLibraries }))
-    expect(coverage.total).toBe(files.flatMap(({ data }) => data.questions.filter((q) => q.status === 'active')).length)
+    questions.forEach((question) => {
+      const id = sectionOfLibrary.get(question.libraryId)
+      const entry = sections.get(id) ?? { total: 0, english: [], all: [] }
+
+      entry.total++
+      entry.all.push(question.id)
+
+      if (question.localized.en) {
+        entry.english.push(question.id)
+      }
+
+      sections.set(id, entry)
+    })
+
+    console.log(
+      JSON.stringify({
+        languageCoverage: coverage,
+        librariesWithCompleteEnglish: completeLibraries.length,
+        sectionsWithCompleteEnglish: [...sections.values()].filter((entry) => entry.english.length === entry.total).length,
+        sectionsWithPartialEnglish: [...sections.values()].filter((entry) => entry.english.length > 0 && entry.english.length < entry.total).length,
+      }),
+    )
+
+    // Frage-Ebene: deutsch überall; englisch genau die Fragen mit gültigem EN (der Parser verwirft nichts Gültiges).
+    expect(coverage.total).toBe(rawActive.length)
     expect(coverage.de).toBe(coverage.total)
+    expect(coverage.en).toBe(rawEnglish.length)
+    expect(coverage.englishComplete).toBe(rawEnglish.length === rawActive.length)
+    // Library-Ebene: vollständig bilingual nur, wenn jede aktive Frage EN hat; languageSupport nur dann auch deklariert.
+    completeLibraries.forEach((item) => expect(item.library.languageSupport).toContain('en'))
+    parsed
+      .filter((item) => item.library.contentCoverage.en < item.library.questionCount)
+      .forEach((item) => expect(item.library.languageSupport).not.toContain('en'))
+    expect(parsed.reduce((total, item) => total + item.library.contentCoverage.en, 0)).toBe(coverage.en)
 
     const app = mountApp()
 
@@ -138,29 +174,69 @@ describe.skipIf(!root || !existsSync(root))('real pilot: multi-library import (l
     await switchLanguage(app.container, 'en')
     await importFiles(app.container, files)
 
-    const firstSection = sectionCards(app.container)[0]
-    const label = firstSection.querySelector('h3').textContent
+    // Abschnitts-Ebene: jede Karte spiegelt genau ihre eigene Abdeckung wider.
+    const sectionIds = [...sections.keys()].sort()
 
-    // Karten nennen Englisch nur, wenn es tatsächlich (ganz oder teilweise) vorhanden ist.
-    sectionCards(app.container).forEach((card) => {
-      expect(card.querySelector('.section-languages').textContent.includes('English')).toBe(coverage.en > 0)
+    expect(sectionCards(app.container)).toHaveLength(sectionIds.length)
+    sectionIds.forEach((sectionId) => {
+      const entry = sections.get(sectionId)
+      const label = `Learning section ${Number(sectionId.replace('la', ''))}`
+      const languages = sectionCard(app.container, label).querySelector('.section-languages').textContent.replace(/\s+/g, ' ').trim()
+
+      if (entry.english.length === 0) {
+        expect(languages, label).toBe('German')
+      } else if (entry.english.length === entry.total) {
+        expect(languages, label).toBe('German · English')
+      } else {
+        // Teilweise Abdeckung = nie volle Verfügbarkeit.
+        expect(languages, label).toBe(`German · English incomplete (${entry.english.length}/${entry.total})`)
+        expect(languages, label).not.toBe('German · English')
+      }
     })
 
-    await openSection(app.container, label)
-
+    // Verhalten "Nur Englisch" je Abdeckungsart (soweit in den echten Daten vorhanden).
     const german = new Set(parsed.flatMap((item) => item.questions.map((question) => question.localized.de.question)))
+    const none = sectionIds.find((id) => sections.get(id).english.length === 0)
+    const partial = sectionIds.find((id) => sections.get(id).english.length > 0 && sections.get(id).english.length < sections.get(id).total)
 
-    if (coverage.en === 0) {
-      // "Nur Englisch" ohne englische Fragen: kontrolliert blockiert (kein stilles Deutsch, keine Session).
+    if (none) {
+      const label = `Learning section ${Number(none.replace('la', ''))}`
+
+      await openSection(app.container, label)
       buttonByText(app.container, 'Start learning round').click()
       await settle()
       expect(app.container.querySelector('.library-message-error').textContent).toContain('no English questions')
-      expect(await withStore((store) => store.listSectionSessions())).toHaveLength(0)
+      expect(await withStore((store) => store.getLatestSectionSession(none))).toBeNull()
 
       // Bewusst Deutsch gewählt: echter deutscher Text.
       await chooseLanguageOption(app.container, 'de')
       await startQuiz(app.container)
       expect(german.has(heading(app.container))).toBe(true)
+      await settle()
+      expect((await withStore((store) => store.getLatestSectionSession(none))).sessionLanguage).toBe('de')
+    }
+
+    if (partial) {
+      const entry = sections.get(partial)
+      const label = `Learning section ${Number(partial.replace('la', ''))}`
+      const second = await reloadWithoutImport(app)
+
+      await switchLanguage(second.container, 'en')
+      await openSection(second.container, label)
+      await chooseLanguageOption(second.container, 'en-only')
+      await startQuiz(second.container)
+      await settle()
+
+      // Teilweise EN-Abdeckung: "Nur Englisch" enthält genau die englischen Fragen, die übrigen werden gemeldet.
+      const stored = await withStore((store) => store.getLatestSectionSession(partial))
+
+      expect(new Set(stored.orderedQuestionIds)).toEqual(new Set(entry.english))
+      expect(new Set(stored.skippedQuestionIds)).toEqual(new Set(entry.all.filter((id) => !entry.english.includes(id))))
+      expect(stored).toMatchObject({ sessionLanguage: 'en', languageMode: 'onlyEnglish' })
+      expect(second.container.querySelector('.language-note').textContent).toContain(
+        `${entry.total - entry.english.length} of ${entry.total} questions`,
+      )
+      expect(german.has(heading(second.container))).toBe(false)
     }
   }, 60000)
 

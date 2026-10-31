@@ -84,7 +84,8 @@ describe('library update in the app', () => {
     const message = second.container.querySelector('.library-message-error').textContent
 
     expect(message).toContain(INTRO)
-    expect(message).toContain('Fortschrittsmigration')
+    expect(message).toContain('bleiben unverändert gespeichert')
+    expect(message).not.toContain('Fortschrittsmigration')
     expect(message).not.toContain('sha256')
     expect(buttonByText(second.container, 'Aktualisierung übernehmen')).toBeUndefined()
     // Gespeicherte Fragen bleiben unverändert: die laufende Runde ist weiterhin fortsetzbar.
