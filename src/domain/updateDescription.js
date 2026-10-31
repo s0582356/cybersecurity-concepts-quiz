@@ -1,64 +1,48 @@
-// Verständliche Texte zu Import- und Update-Ergebnissen (Phase 2C/2D/2E).
+// Verständliche Meldungen zu Import- und Update-Ergebnissen (Phase 2C/2D/2E), als übersetzbare Deskriptoren.
 
+import { msg } from '../i18n/index.js'
 import { CHANGE_KIND } from './libraryUpdate.js'
 
-export const UPDATE_INTRO =
-  'Diese Bibliothek wurde aktualisiert. Dein bisheriger Lernfortschritt bleibt gespeichert, ' +
-  'aber die aktuelle Lernrunde kann erst nach einer Fortschrittsmigration fortgesetzt werden.'
+const INTRO = msg('update.intro')
 
 export function describeUpdate({ changeKind, change, replacements, unexplained }) {
   const count = (list) => list?.length ?? 0
 
   if (changeKind === CHANGE_KIND.QUESTIONS_REPLACED) {
     const inherited = replacements.filter((replacement) => replacement.policy === 'inherit').length
-    const reset = replacements.length - inherited
 
     return {
       compatible: true,
-      text:
-        `${UPDATE_INTRO} ${replacements.length} Fragen wurden ersetzt: ${inherited} übernehmen den bisherigen Fortschritt ` +
-        `(gleiches Lernziel), ${reset} starten ohne Fortschritt (neues Lernziel). ` +
-        'Eine laufende Lernrunde wird nur angepasst, wenn das sicher möglich ist. ' +
-        'Du kannst die Aktualisierung bewusst übernehmen. Die Datei wurde noch nicht geladen.',
+      message: msg('update.replaced', {
+        intro: INTRO,
+        count: replacements.length,
+        inherited,
+        reset: replacements.length - inherited,
+      }),
     }
   }
 
   if (changeKind === CHANGE_KIND.QUESTIONS_REMOVED) {
     return {
       compatible: false,
-      text:
-        `${UPDATE_INTRO} ${count(change.removed)} Fragen wurden entfernt, ${count(unexplained)} davon sind durch ` +
-        'den Ersetzungs-Index nicht erklärt (Index fehlt oder die Ziel-Bibliothek ist nicht geladen). ' +
-        'Lade die Ersetzungsliste (retired-index.json) bzw. die Ziel-Bibliothek und importiere die Datei erneut. ' +
-        'Die Datei wurde nicht geladen; Fortschritt und Lernrunde bleiben unverändert gespeichert.',
+      message: msg('update.removed', { intro: INTRO, count: count(change.removed), unexplained: count(unexplained) }),
     }
   }
 
   if (changeKind === CHANGE_KIND.REVISIONS_ONLY) {
-    return {
-      compatible: true,
-      text:
-        `${UPDATE_INTRO} ${count(change.revised)} Fragen wurden überarbeitet; dein Fortschritt dazu bleibt erhalten. ` +
-        'Du kannst die Aktualisierung bewusst übernehmen. Die Datei wurde noch nicht geladen.',
-    }
+    return { compatible: true, message: msg('update.revisions', { intro: INTRO, count: count(change.revised) }) }
   }
 
   if (changeKind === CHANGE_KIND.QUESTIONS_ADDED) {
     return {
       compatible: true,
-      text:
-        `${UPDATE_INTRO} ${count(change.added)} Fragen sind neu (sie starten ohne Fortschritt)` +
-        (count(change.revised) > 0 ? `, ${count(change.revised)} wurden überarbeitet` : '') +
-        '. Eine laufende Lernrunde kann danach nicht fortgesetzt, nur neu gestartet werden. ' +
-        'Die Datei wurde noch nicht geladen.',
+      message: msg('update.added', {
+        intro: INTRO,
+        count: count(change.added),
+        revised: count(change.revised) > 0 ? msg('update.addedRevised', { count: count(change.revised) }) : '',
+      }),
     }
   }
 
-  return {
-    compatible: false,
-    text:
-      `${UPDATE_INTRO} Diese Änderung kann in dieser App-Version noch nicht übernommen werden ` +
-      '(z. B. entfernte Fragen oder eine abweichende Datei). Die Datei wurde nicht geladen; ' +
-      'Fortschritt und Lernrunde bleiben unverändert gespeichert.',
-  }
+  return { compatible: false, message: msg('update.other', { intro: INTRO }) }
 }

@@ -692,3 +692,108 @@ h1 {
   font-size: 0.92rem;
   text-align: center;
 }
+
+/* Phase 2F: Sprachschalter und Inhaltshinweis */
+.hero-section {
+  position: relative;
+}
+
+.language-switch {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.language-button {
+  cursor: pointer;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  padding: 4px 12px;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.72);
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.language-button-active {
+  color: #082f49;
+  background: linear-gradient(135deg, #7dd3fc, #38bdf8);
+  border-color: transparent;
+}
+
+.language-note {
+  width: min(100%, 760px);
+  margin: 12px auto 0;
+  padding: 10px 14px;
+  border: 1px solid rgba(250, 204, 21, 0.4);
+  border-radius: 14px;
+  background: rgba(250, 204, 21, 0.1);
+  color: #fde68a;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.section-languages {
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.memory-aid {
+  margin: 8px 0 0;
+  color: #cbd5e1;
+  font-size: 0.95rem;
+}
+
+.import-language {
+  font-size: 0.88rem;
+}
+
+/* Phase 2F Contract-Fix: Lernsprache, Fallback-Badge, Rückfrage beim Sprachwechsel */
+.language-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin: 8px 0;
+}
+
+.language-option {
+  cursor: pointer;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  padding: 8px 14px;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.72);
+  font-size: 0.9rem;
+}
+
+.language-option-active {
+  color: #082f49;
+  background: linear-gradient(135deg, #7dd3fc, #38bdf8);
+  border-color: transparent;
+  font-weight: 700;
+}
+
+.language-preview,
+.session-language {
+  font-size: 0.9rem;
+  color: #fde68a;
+}
+
+.language-fallback-badge {
+  display: inline-block;
+  margin: 0 0 8px;
+  padding: 4px 10px;
+  border: 1px solid rgba(250, 204, 21, 0.5);
+  border-radius: 999px;
+  background: rgba(250, 204, 21, 0.12);
+  color: #fde68a;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.language-switch-notice button {
+  margin: 6px 8px 0 0;
+}

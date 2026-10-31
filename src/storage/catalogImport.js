@@ -8,29 +8,44 @@
 import { BATCH_REASON, BATCH_STATUS, planLibraryBatch, summarizeBatch } from '../domain/libraryCatalog.js'
 import { CHANGE_KIND } from '../domain/libraryUpdate.js'
 import { describeUpdate } from '../domain/updateDescription.js'
+import { describeError, msg } from '../i18n/index.js'
 import { IMPORT_STATUS, applyLibraryUpdate, registerLibraryImport } from './libraryImport.js'
 
+// Sprachangaben einer importierten Library für den Import-Bericht (nur Zahlen und Hinweise).
+export function languageInfo(library) {
+  if (!library?.contentCoverage) {
+    return null
+  }
+
+  const { de, en } = library.contentCoverage
+  const declaresEnglish = library.languageSupport?.includes('en') ?? false
+  const notes = []
+
+  if (declaresEnglish && en < de) {
+    notes.push(msg('import.language.declaredIncomplete', { en, total: de }))
+  }
+
+  if (!declaresEnglish && en === de && de > 0) {
+    notes.push(msg('import.language.notDeclared'))
+  }
+
+  if (library.languageIssues?.length > 0) {
+    notes.push(msg('import.language.issues', { count: library.languageIssues.length }))
+  }
+
+  return { de, en, declaresEnglish, notes }
+}
+
 export const BATCH_RESULT_MESSAGE = {
-  [BATCH_STATUS.NEW]: 'Neue Bibliothek erkannt. Dein Fortschritt wird ab jetzt lokal im Browser gespeichert.',
-  [BATCH_STATUS.KNOWN]: 'Bekannte Bibliothek erkannt. Gespeicherter Fortschritt wird verwendet.',
-  [BATCH_STATUS.VERSION_UPDATED]:
-    'Bekannte Bibliothek in neuerer Version erkannt. Gespeicherter Fortschritt bleibt erhalten.',
+  [BATCH_STATUS.NEW]: msg('result.new'),
+  [BATCH_STATUS.KNOWN]: msg('result.known'),
+  [BATCH_STATUS.VERSION_UPDATED]: msg('result.versionUpdated'),
 }
 
 const RETIRED_INDEX_LOADED = 'retiredIndexLoaded'
 
-export const BATCH_STATUS_LABEL = {
-  [BATCH_STATUS.NEW]: 'Neu importiert',
-  [BATCH_STATUS.KNOWN]: 'Bereits aktuell',
-  [BATCH_STATUS.VERSION_UPDATED]: 'Aktualisiert',
-  [BATCH_STATUS.UPDATE_PENDING]: 'Update benötigt Bestätigung',
-  [BATCH_STATUS.REPLACEMENT_PENDING]: 'Replacement-Migration benötigt Bestätigung',
-  [BATCH_STATUS.UPDATE_BLOCKED]: 'Update nicht übernehmbar',
-  [BATCH_STATUS.INVALID]: 'Ungültig',
-  [BATCH_STATUS.REJECTED]: 'Abgelehnt',
-  [BATCH_STATUS.SKIPPED]: 'Übersprungen',
-  [RETIRED_INDEX_LOADED]: 'Ersetzungsliste geladen',
-}
+// Übersetzbare Statusbezeichnungen (Schlüssel `status.<status>`).
+export const batchStatusLabel = (status) => msg(`status.${status}`)
 
 // Kategorie für die Darstellung: info = in Ordnung, warning = braucht Entscheidung, error = nicht importiert.
 export function resultSeverity(status) {
@@ -47,6 +62,7 @@ function resultFor(entry, status, extra = {}) {
     libraryId: entry.library?.libraryId ?? null,
     title: entry.library?.title ?? null,
     learningSectionId: entry.library?.learningSectionId ?? null,
+    languages: languageInfo(entry.library),
     status,
     ...extra,
   }
@@ -63,7 +79,7 @@ async function importOne(store, entry, { retiredIndex, now }) {
         result: resultFor(entry, BATCH_STATUS.REJECTED, {
           reason: outcome.reason,
           conflictingLibraryIds: outcome.conflictingLibraryIds,
-          message: `${outcome.message} Die Library wird nicht importiert; nichts wurde überschrieben.`,
+          message: msg('result.rejectedSuffix', { message: outcome.message }),
         }),
       }
     }
@@ -77,7 +93,7 @@ async function importOne(store, entry, { retiredIndex, now }) {
           : BATCH_STATUS.UPDATE_PENDING
 
       return {
-        result: resultFor(entry, status, { changeKind: outcome.changeKind, message: description.text }),
+        result: resultFor(entry, status, { changeKind: outcome.changeKind, message: description.message }),
         pending: description.compatible ? entry : null,
       }
     }
@@ -93,7 +109,7 @@ async function importOne(store, entry, { retiredIndex, now }) {
     return {
       result: resultFor(entry, BATCH_STATUS.REJECTED, {
         reason: 'storage-error',
-        message: `Die Library konnte nicht gespeichert werden: ${error.message}`,
+        message: msg('result.storageError', { detail: describeError(error) }),
       }),
     }
   }
@@ -111,7 +127,7 @@ export async function importLibraryBatch(store, entries, { retiredIndex = null, 
       results.push(
         resultFor(entry, BATCH_STATUS.REJECTED, {
           reason: BATCH_REASON.MULTIPLE_RETIRED_INDEXES,
-          message: 'Mehrere Ersetzungslisten im selben Batch; keine davon wurde geladen. Bitte nur eine auswählen.',
+          message: msg('batch.multipleRetired'),
         }),
       ),
     )
@@ -123,14 +139,14 @@ export async function importLibraryBatch(store, entries, { retiredIndex = null, 
       activeRetiredIndex = entry.retiredIndex
       results.push(
         resultFor(entry, RETIRED_INDEX_LOADED, {
-          message: `Ersetzungsliste geladen (${Object.keys(entry.retiredIndex).length} Einträge). Sie wird bei Bibliotheks-Updates verwendet.`,
+          message: msg('result.retiredLoaded', { count: Object.keys(entry.retiredIndex).length }),
         }),
       )
     } catch (error) {
       results.push(
         resultFor(entry, BATCH_STATUS.REJECTED, {
           reason: 'storage-error',
-          message: `Ersetzungsliste konnte nicht gespeichert werden: ${error.message}`,
+          message: msg('result.retiredStorageError', { detail: describeError(error) }),
         }),
       )
     }

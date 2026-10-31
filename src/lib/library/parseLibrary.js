@@ -7,11 +7,19 @@
 // vollständigen Schema-Validator.
 
 import { parseRetiredIndex } from '../../domain/replacementMigration.js'
+import {
+  normalizeLocalizedContent,
+  validateEnglishContent,
+  validateLocalizedContent,
+} from '../../domain/questionContent.js'
+import { msg, translate } from '../../i18n/index.js'
 
+// Fehler tragen einen Meldungsschlüssel samt Parametern (`i18n`); `message` ist die deutsche Standardfassung.
 export class LibraryParseError extends Error {
-  constructor(message) {
-    super(message)
+  constructor(key, params = {}) {
+    super(translate('de', key, params))
     this.name = 'LibraryParseError'
+    this.i18n = msg(key, params)
   }
 }
 
@@ -25,40 +33,42 @@ const OPTION_KEYS = ['a', 'b', 'c', 'd']
 
 export function parseV1Questions(data) {
   if (!Array.isArray(data)) {
-    throw new LibraryParseError('Die JSON-Datei muss ein Array von Fragen enthalten.')
+    throw new LibraryParseError('parse.v1.notArray')
   }
 
   if (data.length === 0) {
-    throw new LibraryParseError('Die JSON-Datei enthält keine Fragen.')
+    throw new LibraryParseError('parse.v1.empty')
   }
 
   data.forEach((question, index) => {
+    const n = index + 1
+
     if (!question.question || typeof question.question !== 'string') {
-      throw new LibraryParseError(`Frage ${index + 1}: "question" fehlt oder ist ungültig.`)
+      throw new LibraryParseError('parse.v1.question', { n })
     }
 
     if (!Array.isArray(question.options) || question.options.length < 2) {
-      throw new LibraryParseError(`Frage ${index + 1}: "options" muss mindestens zwei Antworten enthalten.`)
+      throw new LibraryParseError('parse.v1.options', { n })
     }
 
     if (!question.correctAnswer || typeof question.correctAnswer !== 'string') {
-      throw new LibraryParseError(`Frage ${index + 1}: "correctAnswer" fehlt oder ist ungültig.`)
+      throw new LibraryParseError('parse.v1.correctAnswer', { n })
     }
 
     if (!question.options.includes(question.correctAnswer)) {
-      throw new LibraryParseError(`Frage ${index + 1}: "correctAnswer" muss in "options" enthalten sein.`)
+      throw new LibraryParseError('parse.v1.correctInOptions', { n })
     }
 
     if (!question.explanation || typeof question.explanation !== 'string') {
-      throw new LibraryParseError(`Frage ${index + 1}: "explanation" fehlt oder ist ungültig.`)
+      throw new LibraryParseError('parse.v1.explanation', { n })
     }
 
     if (question.category !== undefined && typeof question.category !== 'string') {
-      throw new LibraryParseError(`Frage ${index + 1}: "category" muss ein Text sein.`)
+      throw new LibraryParseError('parse.v1.category', { n })
     }
 
     if (question.difficulty !== undefined && typeof question.difficulty !== 'string') {
-      throw new LibraryParseError(`Frage ${index + 1}: "difficulty" muss ein Text sein.`)
+      throw new LibraryParseError('parse.v1.difficulty', { n })
     }
   })
 
@@ -77,8 +87,27 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim() !== ''
 }
 
-function toQuizQuestion(question, libraryId) {
-  const german = question.localized.de
+// Bereinigte Fassung einer Sprache: nur Struktur, die der Contract vorsieht. Englisch wird nur übernommen, wenn es
+// strukturell gültig ist (a–d, Texte, Erklärung); sonst bleibt `en` null und der Befund wird gemeldet.
+function toQuizQuestion(question, libraryId, issues) {
+  const german = normalizeLocalizedContent(question.localized.de)
+  const rawEnglish = question.localized.en
+  let english = null
+
+  if (rawEnglish !== null && rawEnglish !== undefined) {
+    const check = validateEnglishContent(rawEnglish)
+
+    if (check.valid) {
+      english = normalizeLocalizedContent(rawEnglish)
+    } else {
+      issues.push({ id: question.id, locale: 'en', problem: check.problem })
+    }
+  }
+
+  Object.keys(question.localized)
+    .filter((locale) => locale !== 'de' && locale !== 'en')
+    .forEach((locale) => issues.push({ id: question.id, locale, problem: 'unknownLocale' }))
+
   const options = OPTION_KEYS.map((key) => german.optionText[key])
 
   return {
@@ -87,78 +116,82 @@ function toQuizQuestion(question, libraryId) {
     libraryId,
     category: question.topicId || question.learningSectionId || 'Allgemein',
     difficulty: question.difficulty || 'medium',
+    // Deutsche Standardansicht (flach, wie bisher); die Anzeige läuft über das Content-Modul.
     question: german.question,
     options,
     correctAnswer: german.optionText[question.correctOptionKey],
     explanation: german.explanation,
     contentRevision: question.contentRevision,
+    correctOptionKey: question.correctOptionKey,
     // Keys a–d sind lokal zur Frage; nur für Optionsreihenfolge/Auswahl innerhalb derselben Frage.
-    optionTextByKey: Object.fromEntries(OPTION_KEYS.map((key) => [key, german.optionText[key]])),
+    optionTextByKey: { ...german.optionText },
+    localized: { de: german, en: english },
   }
 }
 
 export function parseV2Library(data) {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) {
-    throw new LibraryParseError('Eine V2-Library muss ein JSON-Objekt sein.')
+    throw new LibraryParseError('parse.v2.notObject')
   }
 
   if (!isNonEmptyString(data.schemaVersion)) {
-    throw new LibraryParseError('V2-Library: "schemaVersion" fehlt.')
+    throw new LibraryParseError('parse.v2.schemaMissing')
   }
 
   if (!SUPPORTED_V2_SCHEMA.test(data.schemaVersion)) {
-    throw new LibraryParseError(`V2-Library: schemaVersion "${data.schemaVersion}" wird nicht unterstützt.`)
+    throw new LibraryParseError('parse.v2.schemaUnsupported', { version: data.schemaVersion })
   }
 
   if (!isNonEmptyString(data.libraryId) || !LIBRARY_ID_PATTERN.test(data.libraryId)) {
-    throw new LibraryParseError('V2-Library: "libraryId" fehlt oder ist ungültig.')
+    throw new LibraryParseError('parse.v2.libraryId')
   }
 
   if (!isNonEmptyString(data.libraryVersion) || !SEMVER_PATTERN.test(data.libraryVersion)) {
-    throw new LibraryParseError('V2-Library: "libraryVersion" fehlt oder ist ungültig.')
+    throw new LibraryParseError('parse.v2.libraryVersion')
   }
 
   if (!isNonEmptyString(data.activeQuestionIndexHash) || !HASH_PATTERN.test(data.activeQuestionIndexHash)) {
-    throw new LibraryParseError('V2-Library: "activeQuestionIndexHash" fehlt oder ist ungültig.')
+    throw new LibraryParseError('parse.v2.hash')
   }
 
   if (!Array.isArray(data.questions)) {
-    throw new LibraryParseError('V2-Library: "questions" muss ein Array sein.')
+    throw new LibraryParseError('parse.v2.questionsNotArray')
   }
 
   if (data.questions.length === 0) {
-    throw new LibraryParseError('V2-Library: "questions" enthält keine Fragen.')
+    throw new LibraryParseError('parse.v2.questionsEmpty')
   }
 
   if (data.questionCount !== undefined && data.questionCount !== data.questions.length) {
-    throw new LibraryParseError('V2-Library: "questionCount" passt nicht zur Anzahl der Fragen.')
+    throw new LibraryParseError('parse.v2.questionCount')
   }
 
   if (data.sourceSections !== undefined && !Array.isArray(data.sourceSections)) {
-    throw new LibraryParseError('V2-Library: "sourceSections" muss ein Array sein.')
+    throw new LibraryParseError('parse.v2.sourceSections')
   }
 
   if (Array.isArray(data.languageSupport) && !data.languageSupport.includes('de')) {
-    throw new LibraryParseError('V2-Library: deutsche Inhalte ("de") fehlen in "languageSupport".')
+    throw new LibraryParseError('parse.v2.germanMissingInSupport')
   }
 
   const seenIds = new Set()
   const activeQuestions = []
   const sectionIds = new Set()
+  const languageIssues = []
 
   data.questions.forEach((question, index) => {
-    const label = `V2-Frage ${index + 1}`
+    const n = index + 1
 
     if (question === null || typeof question !== 'object') {
-      throw new LibraryParseError(`${label}: ungültiger Eintrag.`)
+      throw new LibraryParseError('parse.v2.entryInvalid', { n })
     }
 
     if (!isNonEmptyString(question.id) || !QUESTION_ID_PATTERN.test(question.id)) {
-      throw new LibraryParseError(`${label}: "id" fehlt oder ist ungültig.`)
+      throw new LibraryParseError('parse.v2.idInvalid', { n })
     }
 
     if (seenIds.has(question.id)) {
-      throw new LibraryParseError(`${label}: doppelte Question-ID "${question.id}".`)
+      throw new LibraryParseError('parse.v2.idDuplicate', { n, id: question.id })
     }
 
     seenIds.add(question.id)
@@ -169,58 +202,59 @@ export function parseV2Library(data) {
     }
 
     const german = question.localized?.de
+    const where = { n, id: question.id }
 
     if (!german || !isNonEmptyString(german.question)) {
-      throw new LibraryParseError(`${label} (${question.id}): deutscher Fragetext fehlt.`)
+      throw new LibraryParseError('parse.v2.germanQuestion', where)
     }
 
     if (!german.optionText || typeof german.optionText !== 'object') {
-      throw new LibraryParseError(`${label} (${question.id}): "optionText" fehlt.`)
+      throw new LibraryParseError('parse.v2.optionTextMissing', where)
     }
 
     OPTION_KEYS.forEach((key) => {
       if (!isNonEmptyString(german.optionText[key])) {
-        throw new LibraryParseError(`${label} (${question.id}): Option "${key}" fehlt.`)
+        throw new LibraryParseError('parse.v2.optionMissing', { ...where, key })
       }
     })
 
     const optionTexts = OPTION_KEYS.map((key) => german.optionText[key])
 
     if (new Set(optionTexts).size !== optionTexts.length) {
-      throw new LibraryParseError(`${label} (${question.id}): Optionstexte sind nicht eindeutig.`)
+      throw new LibraryParseError('parse.v2.optionsNotUnique', where)
     }
 
     if (!OPTION_KEYS.includes(question.correctOptionKey)) {
-      throw new LibraryParseError(`${label} (${question.id}): "correctOptionKey" ist ungültig.`)
+      throw new LibraryParseError('parse.v2.correctOptionKey', where)
     }
 
     if (!Number.isInteger(question.contentRevision) || question.contentRevision < 1) {
-      throw new LibraryParseError(`${label} (${question.id}): "contentRevision" fehlt oder ist ungültig.`)
+      throw new LibraryParseError('parse.v2.contentRevision', where)
     }
 
     if (!isNonEmptyString(german.explanation)) {
-      throw new LibraryParseError(`${label} (${question.id}): deutsche Erklärung fehlt.`)
+      throw new LibraryParseError('parse.v2.germanExplanation', where)
     }
 
     // Phase 2E: der Lernabschnitt steht je Frage (`learningSectionId`), nicht auf Library-Ebene.
     sectionIds.add(question.learningSectionId)
-    activeQuestions.push(toQuizQuestion(question, data.libraryId))
+    activeQuestions.push(toQuizQuestion(question, data.libraryId, languageIssues))
   })
 
   if (activeQuestions.length === 0) {
-    throw new LibraryParseError('V2-Library: keine aktiven Fragen enthalten.')
+    throw new LibraryParseError('parse.v2.noActive')
   }
 
   if ([...sectionIds].some((id) => !isNonEmptyString(id) || !SECTION_ID_PATTERN.test(id))) {
-    throw new LibraryParseError('V2-Library: "learningSectionId" fehlt oder ist ungültig (Lernabschnitt nicht erkennbar).')
+    throw new LibraryParseError('parse.v2.sectionInvalid')
   }
 
   if (sectionIds.size !== 1) {
-    throw new LibraryParseError(
-      `V2-Library: die aktiven Fragen gehören zu ${sectionIds.size} verschiedenen Lernabschnitten (${[...sectionIds].join(', ')}); ` +
-        'eine Library muss genau einem Lernabschnitt zugeordnet sein.',
-    )
+    throw new LibraryParseError('parse.v2.sectionsMixed', { count: sectionIds.size, ids: [...sectionIds].join(', ') })
   }
+
+  const englishCount = activeQuestions.filter((question) => question.localized.en).length
+  const declared = Array.isArray(data.languageSupport) ? data.languageSupport.filter((value) => ['de', 'en'].includes(value)) : ['de']
 
   return {
     library: {
@@ -232,6 +266,10 @@ export function parseV2Library(data) {
       sourceSections: data.sourceSections ?? [],
       learningSectionId: [...sectionIds][0],
       questionCount: activeQuestions.length,
+      // Phase 2F: deklarierte Sprachen und tatsächlich strukturell gültige Abdeckung (nur Zahlen).
+      languageSupport: declared,
+      contentCoverage: { de: activeQuestions.length, en: englishCount },
+      languageIssues,
       // Revisionsstand je aktiver Frage (Basis für Update-Klassifikation; nur IDs und Zahlen).
       questionRevisions: Object.fromEntries(
         activeQuestions.map((question) => [question.id, question.contentRevision]),
@@ -258,5 +296,5 @@ export function parseQuestionFile(data) {
     return { format: 'v2', ...parseV2Library(data) }
   }
 
-  throw new LibraryParseError('Die JSON-Datei muss ein Array von Fragen oder eine V2-Library enthalten.')
+  throw new LibraryParseError('parse.file.type')
 }

@@ -12,6 +12,8 @@ import {
 import { summarizeLibraryProgress } from '../domain/progressSummary.js'
 import { SESSION_STATUS } from '../domain/session.js'
 import { evaluateSectionSession } from '../domain/sectionSession.js'
+import { coverageOf, normalizeStoredQuestion } from '../domain/questionContent.js'
+import { msg } from '../i18n/index.js'
 
 export async function readCatalogData(store) {
   const [states, progress, sessions] = await Promise.all([
@@ -31,9 +33,15 @@ export function buildOverview({ states, progress, sessions }) {
     const session = sessions.filter((candidate) => candidate.sectionId === section.sectionId).sort(newestFirst)[0]
     const evaluation = evaluateSectionSession(session ?? null, sectionActiveQuestions(states, section.sectionId))
 
+    // Englisch ist nur verfügbar, wenn jede aktive Frage jeder Library gültiges Englisch hat (Zähler aus dem Katalog).
+    const englishCount = section.libraries.reduce((total, state) => total + (state.contentCoverage?.en ?? 0), 0)
+    const englishComplete = summary.totalQuestions > 0 && section.libraries.every((state) => (state.contentCoverage?.en ?? 0) === state.questionCount)
+
     return {
       sectionId: section.sectionId,
       label: section.label,
+      englishCount,
+      englishComplete,
       libraryCount: section.libraries.length,
       questionCount: summary.totalQuestions,
       answeredCount: summary.answeredCount,
@@ -80,11 +88,12 @@ export function buildSectionView({ sectionId, states, contents, progress, sessio
       sectionId,
       label,
       libraries,
-      error: libraries.length === 0 ? 'Dieser Lernabschnitt ist nicht (mehr) vorhanden.' : 'Die gespeicherten Fragen passen nicht zum Katalog. Bitte die Bibliotheken erneut importieren.',
+      error: msg(libraries.length === 0 ? 'section.missing' : 'section.contentMismatch'),
     }
   }
 
-  const questions = libraries.flatMap((state) => contentOf(state).questions)
+  // Fragen aus Phase 2E enthalten nur die flache deutsche Ansicht; sie werden beim Lesen ergänzt.
+  const questions = libraries.flatMap((state) => contentOf(state).questions).map(normalizeStoredQuestion)
   const keys = new Set(questions.map((question) => `${question.libraryId}::${question.id}`))
   const records = progress.filter((record) => keys.has(`${record.libraryId}::${record.questionId}`))
 
@@ -93,6 +102,7 @@ export function buildSectionView({ sectionId, states, contents, progress, sessio
     label,
     libraries,
     questions,
+    coverage: coverageOf(questions),
     summary: summarizeLibraryProgress(questions, records),
     evaluation: evaluateSectionSession(session ?? null, questions),
   }

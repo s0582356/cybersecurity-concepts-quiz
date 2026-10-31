@@ -71,7 +71,7 @@ export function sectionCard(container, label) {
 export async function openSection(container, label = 'Lernabschnitt 99') {
   await vi.waitFor(() => expect(sectionCard(container, label)).toBeDefined())
   sectionCard(container, label).querySelector('button').click()
-  await vi.waitFor(() => expect(container.querySelector('[aria-label="Lernabschnitt"]')?.textContent).toContain(label))
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="Lernabschnitt"], [aria-label="Learning section"]')?.textContent).toContain(label))
   await settle()
 }
 
@@ -88,6 +88,22 @@ export async function importAndOpen(container, library, fileName = 'test.json') 
   if (!Array.isArray(library)) {
     await openSection(container, sectionLabelOf(library))
   }
+}
+
+// Sprachschalter (DE/EN) bedienen.
+export async function switchLanguage(container, code) {
+  const button = [...container.querySelectorAll('.language-button')].find((node) => node.textContent.trim() === code.toUpperCase())
+
+  button.click()
+  await nextTick()
+  await settle(20)
+}
+
+// Lernsprache im Lernabschnitt wählen: 'de' | 'en-only' | 'en-all' (nur globale Präferenz für neue Runden).
+export async function chooseLanguageOption(container, option) {
+  container.querySelector(`.language-option[data-option="${option}"]`).click()
+  await nextTick()
+  await settle(20)
 }
 
 export function buttonByText(container, text) {
@@ -110,15 +126,25 @@ export function scoreText(container) {
   return container.querySelector('.score-card')?.textContent.replace(/\s+/g, ' ').trim()
 }
 
+// Schaltflächen existieren in Deutsch und Englisch; die Hilfsfunktionen finden beide.
+export function buttonByAnyText(container, texts) {
+  return texts.map((text) => buttonByText(container, text)).find(Boolean)
+}
+
 export async function startQuiz(container) {
-  const button = buttonByText(container, 'Lernrunde starten') ?? buttonByText(container, 'Mit aktueller Fragebank starten')
+  const button = buttonByAnyText(container, [
+    'Lernrunde starten',
+    'Mit aktueller Fragebank starten',
+    'Start learning round',
+    'Start with current question bank',
+  ])
 
   button.click()
   await vi.waitFor(() => expect(heading(container)).not.toBeNull())
 }
 
 export async function resume(container) {
-  buttonByText(container, 'Lernrunde fortsetzen').click()
+  buttonByAnyText(container, ['Lernrunde fortsetzen', 'Continue learning round']).click()
   await vi.waitFor(() => expect(heading(container)).not.toBeNull())
 }
 
@@ -134,7 +160,7 @@ export async function answerCurrent(container, library, { correct }) {
 }
 
 export async function next(container) {
-  buttonByText(container, 'Nächste Frage').click()
+  buttonByAnyText(container, ['Nächste Frage', 'Next question']).click()
   await nextTick()
 }
 
@@ -169,6 +195,7 @@ export async function withStore(callback) {
 
 export function resetBrowserStorage() {
   window.alert = vi.fn()
+  window.localStorage.clear()
   globalThis.indexedDB = new (globalThis.indexedDB.constructor)()
 }
 

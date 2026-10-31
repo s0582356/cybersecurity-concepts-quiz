@@ -11,6 +11,8 @@
 // - Die Merge-Funktion bei Fortschritt auf Retire- UND Keep-ID ist laut Contract eine
 //   App-Regel; sie ist unten feldweise festgelegt.
 
+import { msg, translate } from '../i18n/index.js'
+
 const QUESTION_ID_PATTERN = /^sec-a\d{2}-\d{4}$/
 const POLICIES = ['inherit', 'reset']
 // Der Contract verbietet Klasse-B-/Mapping-Felder im Index (Validator: Fehler).
@@ -24,10 +26,12 @@ const FORBIDDEN_ENTRY_FIELDS = [
 ]
 
 export class RetiredIndexError extends Error {
-  constructor(issues) {
+  // `issueItems`: dieselben Befunde als übersetzbare Meldungen (Phase 2F); `issues` bleibt die deutsche Standardfassung.
+  constructor(issues, issueItems = []) {
     super(`Ungültiger Ersetzungs-Index: ${issues.slice(0, 3).join('; ')}${issues.length > 3 ? ' …' : ''}`)
     this.name = 'RetiredIndexError'
     this.issues = issues
+    this.issueItems = issueItems
   }
 }
 
@@ -43,47 +47,52 @@ export class MigrationError extends Error {
 // Der Freitext `reason` wird nicht übernommen (wird zur Laufzeit nicht gebraucht).
 export function parseRetiredIndex(data) {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) {
-    throw new RetiredIndexError(['Der Index muss ein JSON-Objekt sein.'])
+    throw new RetiredIndexError([translate('de', 'retired.notObject')], [msg('retired.notObject')])
   }
 
   const issues = []
+  const issueItems = []
+  const addIssue = (key, params) => {
+    issues.push(translate('de', key, params))
+    issueItems.push(msg(key, params))
+  }
   const entries = {}
 
   Object.entries(data).forEach(([id, entry]) => {
     if (!QUESTION_ID_PATTERN.test(id)) {
-      issues.push(`${id}: ungültige Question-ID`)
+      addIssue('retired.invalidId', { id })
       return
     }
 
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-      issues.push(`${id}: Eintrag muss ein Objekt sein (Altformat ohne progressMigration ist ungültig)`)
+      addIssue('retired.entryNotObject', { id })
       return
     }
 
     if (typeof entry.replacedBy !== 'string' || !QUESTION_ID_PATTERN.test(entry.replacedBy)) {
-      issues.push(`${id}: replacedBy fehlt oder ist ungültig`)
+      addIssue('retired.replacedBy', { id })
       return
     }
 
     if (entry.replacedBy === id) {
-      issues.push(`${id}: replacedBy zeigt auf sich selbst (Self-Cycle)`)
+      addIssue('retired.selfCycle', { id })
       return
     }
 
     if (!POLICIES.includes(entry.progressMigration)) {
-      issues.push(`${id}: progressMigration fehlt oder ist unbekannt`)
+      addIssue('retired.policy', { id })
       return
     }
 
     if (entry.progressMigration === 'inherit' && entry.learningGoalEquivalence !== 'confirmed') {
-      issues.push(`${id}: inherit verlangt learningGoalEquivalence "confirmed"`)
+      addIssue('retired.inheritEquivalence', { id })
       return
     }
 
     const forbidden = FORBIDDEN_ENTRY_FIELDS.filter((field) => field in entry)
 
     if (forbidden.length > 0) {
-      issues.push(`${id}: unzulässige Felder (${forbidden.join(', ')}) – keine Option-Migration`)
+      addIssue('retired.forbidden', { id, fields: forbidden.join(', ') })
       return
     }
 
@@ -98,12 +107,12 @@ export function parseRetiredIndex(data) {
   Object.entries(entries).forEach(([id, entry]) => {
     if (entry.replacedBy in entries) {
       const cycle = entries[entry.replacedBy].replacedBy === id
-      issues.push(`${id}: Ziel ${entry.replacedBy} ist selbst retired (${cycle ? 'Zyklus' : 'Kette'})`)
+      addIssue('retired.chain', { id, target: entry.replacedBy, kind: msg(cycle ? 'retired.kind.cycle' : 'retired.kind.chain') })
     }
   })
 
   if (issues.length > 0) {
-    throw new RetiredIndexError(issues)
+    throw new RetiredIndexError(issues, issueItems)
   }
 
   return entries

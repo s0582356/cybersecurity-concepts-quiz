@@ -1,5 +1,6 @@
 <script setup>
 import { parseQuestionFile } from '../lib/library/parseLibrary.js'
+import { msg, t } from '../i18n/index.js'
 
 defineProps({
   // Ohne importierte Bibliothek: Hinweis und Button entsprechend beschriften.
@@ -23,7 +24,16 @@ async function readEntry(file) {
 
     return { fileName: file.name, kind: 'v2', library: parsed.library, questions: parsed.questions }
   } catch (error) {
-    return { fileName: file.name, kind: 'invalid', error: error.message }
+    // Übersetzbare Fehler (Parser, Ersetzungsliste) behalten ihren Schlüssel; JSON-Syntaxfehler werden verpackt.
+    const message = error.i18n
+      ? error.i18n
+      : error.issueItems
+        ? msg('result.retiredInvalid', { issues: error.issueItems.slice(0, 3) })
+        : error instanceof SyntaxError
+          ? msg('import.invalidJson', { detail: error.message })
+          : error.message
+
+    return { fileName: file.name, kind: 'invalid', error: message }
   }
 }
 
@@ -46,20 +56,14 @@ const handleFileChange = async (event) => {
 </script>
 
 <template>
-  <section class="import-card" aria-label="Private Fragebank importieren">
+  <section class="import-card" :aria-label="t('import.cardLabel')">
     <div>
-      <h2>{{ empty ? 'Noch keine Lernbibliotheken importiert.' : 'Security+ Bibliothek' }}</h2>
-      <p>
-        Wähle eine oder mehrere lokale JSON-Dateien aus (z. B. alle Bibliotheken auf einmal).
-        Die Dateien werden nur im Browser gelesen und nicht hochgeladen. Die App erkennt
-        Bibliothek und Lernabschnitt selbst und merkt sie sich lokal in diesem Browser
-        (Fragen, Fortschritt und Lernrunden); bei späteren Besuchen musst du nichts erneut
-        auswählen. Hier kann auch die Ersetzungsliste (retired-index.json) geladen werden.
-      </p>
+      <h2>{{ empty ? t('import.title.empty') : t('import.title') }}</h2>
+      <p>{{ t('import.text') }}</p>
     </div>
 
     <label class="import-button">
-      {{ empty ? 'JSON-Bibliotheken auswählen' : 'Bibliotheken importieren' }}
+      {{ empty ? t('import.button.empty') : t('import.button') }}
       <input
         type="file"
         accept=".json,application/json"

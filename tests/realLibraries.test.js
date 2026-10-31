@@ -5,9 +5,12 @@ import 'fake-indexeddb/auto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { coverageOf } from '../src/domain/questionContent.js'
+import { parseV2Library } from '../src/lib/library/parseLibrary.js'
 import {
   answerButtons,
   buttonByText,
+  chooseLanguageOption,
   heading,
   importFiles,
   mountApp,
@@ -21,6 +24,7 @@ import {
   sectionCards,
   settle,
   startQuiz,
+  switchLanguage,
   unmountAll,
   withStore,
 } from './helpers/appHarness.js'
@@ -115,6 +119,50 @@ describe.skipIf(!root || !existsSync(root))('real pilot: multi-library import (l
     expect([...app.container.querySelectorAll('.import-results .import-status')].every((node) => node.textContent === 'Bereits aktuell')).toBe(true)
     expect((await withStore((store) => store.listAllProgress())).length).toBe(4)
   }, 120000)
+
+  // Phase 2F: echte Sprachabdeckung. Erwartung wird aus den Dateien berechnet; solange kein Englisch existiert,
+  // muss die App Deutsch zeigen und das offen melden (keine behauptete Zweisprachigkeit).
+  it('measures the real language coverage and never pretends English exists', async () => {
+    const parsed = files.map(({ data }) => parseV2Library(data))
+    const questions = parsed.flatMap((item) => item.questions)
+    const coverage = coverageOf(questions)
+    const completeLibraries = parsed.filter((item) => item.library.contentCoverage.en === item.library.questionCount).length
+
+    console.log(JSON.stringify({ languageCoverage: coverage, librariesWithCompleteEnglish: completeLibraries }))
+    expect(coverage.total).toBe(files.flatMap(({ data }) => data.questions.filter((q) => q.status === 'active')).length)
+    expect(coverage.de).toBe(coverage.total)
+
+    const app = mountApp()
+
+    await settle()
+    await switchLanguage(app.container, 'en')
+    await importFiles(app.container, files)
+
+    const firstSection = sectionCards(app.container)[0]
+    const label = firstSection.querySelector('h3').textContent
+
+    // Karten nennen Englisch nur, wenn es tatsächlich (ganz oder teilweise) vorhanden ist.
+    sectionCards(app.container).forEach((card) => {
+      expect(card.querySelector('.section-languages').textContent.includes('English')).toBe(coverage.en > 0)
+    })
+
+    await openSection(app.container, label)
+
+    const german = new Set(parsed.flatMap((item) => item.questions.map((question) => question.localized.de.question)))
+
+    if (coverage.en === 0) {
+      // "Nur Englisch" ohne englische Fragen: kontrolliert blockiert (kein stilles Deutsch, keine Session).
+      buttonByText(app.container, 'Start learning round').click()
+      await settle()
+      expect(app.container.querySelector('.library-message-error').textContent).toContain('no English questions')
+      expect(await withStore((store) => store.listSectionSessions())).toHaveLength(0)
+
+      // Bewusst Deutsch gewählt: echter deutscher Text.
+      await chooseLanguageOption(app.container, 'de')
+      await startQuiz(app.container)
+      expect(german.has(heading(app.container))).toBe(true)
+    }
+  }, 60000)
 
   it('reports the real numbers (for the report)', () => {
     const active = files.flatMap(({ data }) => data.questions.filter((question) => question.status === 'active'))

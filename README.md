@@ -37,6 +37,7 @@ The goal of this project is to demonstrate a clean frontend structure, JSON-base
 * Session-based wrong-answer review mode
 * Visible review-mode label
 * Local private question bank import through the file picker
+* German/English user interface with a language switch (the choice is kept locally)
 * Next-question navigation
 * Restart option after the result screen
 * Component-based UI structure
@@ -97,6 +98,16 @@ V2 learning rounds can be resumed: the browser also stores the current round (th
 When a newer version of a library file is loaded, the app compares the question landscape: a new version with the same landscape is adopted silently; revised or added questions can be adopted after an explicit confirmation (progress is kept, nothing is copied or deleted); removed questions are only adopted if the local replacement list (retired-index.json, loaded through the same file picker; only IDs and policies are stored) explains every one of them — `inherit` carries the portable progress (attempts, answered, last result) over to the replacing question, `reset` carries nothing, answers/chosen options are never carried over. A deviating file is blocked.
 
 Private local study material should remain outside the public source code and must not be committed, pushed, deployed, or shown in screenshots. The private JSON files are never part of the public repository, and no real private questions are embedded in public fixtures or the build output.
+
+## Language Support (DE/EN)
+
+The user interface is available in German and English. The language switch in the page header changes all normal UI texts (including import results, update messages, and error messages) and is remembered in the browser's `localStorage` (one small, library-independent setting).
+
+UI language and question content are separate things. A question counts as available in English only if its `localized.en` is complete according to the V2 schema (question text, options `a`–`d` with the same keys, explanation, and `memoryAid` with a valid `type` and text); the app checks the actual structure and does not rely on `languageSupport` alone. For English learning there are two modes (as defined by the DE/EN content contract): **English only** (default) puts only questions with valid English into the round and always shows how many questions were left out; **All available questions** (opt-in) includes every question and shows questions without English in German with a visible badge. A round never mixes languages silently. The language, the mode, and the left-out question IDs are stored with the learning round, so a round is resumed exactly in the language and with the question set it was started with, even if the global language setting changed meanwhile. If a language switch during a round would require a different question set, the running round stays unchanged and you choose explicitly (start a new round or continue the running one).
+
+There is no automatic or runtime translation. The public sample questions and the currently available private libraries are German only; English question content has to be added to the libraries first (separate, reviewed content work).
+
+German and English are two presentations of the same question: the question ID, the correct option key, progress, and the learning round do not depend on the language. Switching the language during a round only changes the displayed texts (no new round, no re-shuffle, no new answer). Library content, progress, and rounds are stored locally in the browser as before; nothing is uploaded.
 
 ## Learning Workflow
 

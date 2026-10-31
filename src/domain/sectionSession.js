@@ -9,6 +9,7 @@
 // Eine laufende Runde bleibt deterministisch: später importierte Fragen werden nie in
 // `orderedQuestionIds` eingeschoben, sondern erst von der nächsten Runde aufgenommen.
 
+import { hasValidEnglish } from './questionContent.js'
 import {
   SESSION_MODE_LEARNING,
   SESSION_STATUS,
@@ -24,7 +25,20 @@ export function sectionScopeKey(sectionId) {
 
 // orderedQuestions: Quiz-Fragen ({ id, libraryId, contentRevision, ... }) in der gewürfelten Reihenfolge.
 // libraries: Library-States des Abschnitts zum Rundenstart (nur Metadaten).
-export function createSectionSessionRecord({ sectionId, libraries, orderedQuestions, optionOrder = null, ...rest }) {
+// Sprachangaben (DE/EN-Contract: aktive Sitzungssprache im Resume-Datensatz):
+// - sessionLanguage        Inhaltssprache der Runde ('de' | 'en'); unabhängig von der Oberflächensprache
+// - languageMode           'onlyEnglish' | 'allAvailable' bei Englisch (sonst null): bestimmt die Fragenmenge
+// - skippedQuestionIds     bei "Nur Englisch" ausgelassene Fragen (nur IDs; für die sichtbare Kennzahl)
+export function createSectionSessionRecord({
+  sectionId,
+  libraries,
+  orderedQuestions,
+  optionOrder = null,
+  sessionLanguage = 'de',
+  languageMode = null,
+  skippedQuestionIds = [],
+  ...rest
+}) {
   const base = createSessionRecord({
     ...rest,
     library: { libraryId: sectionScopeKey(sectionId), libraryVersion: '0.0.0', activeQuestionIndexHash: null },
@@ -41,6 +55,9 @@ export function createSectionSessionRecord({ sectionId, libraries, orderedQuesti
   return {
     ...record,
     sectionId,
+    sessionLanguage,
+    languageMode,
+    skippedQuestionIds: [...skippedQuestionIds],
     libraries: libraries.map((library) => ({
       libraryId: library.libraryId,
       libraryVersion: library.libraryVersion,
@@ -53,6 +70,20 @@ export function createSectionSessionRecord({ sectionId, libraries, orderedQuesti
 
 export function isSectionSession(session) {
   return Boolean(session?.sectionId)
+}
+
+// Neue Fragen seit Rundenstart. Fragen, die "Nur Englisch" bewusst ausgelassen hat, zählen nicht als neu – es sei denn,
+// sie haben inzwischen gültiges Englisch (nur prüfbar, wenn echte Fragen statt Katalog-Metadaten übergeben werden).
+function newQuestionCountOf(session, active, orderedSet) {
+  const skipped = new Set(session.skippedQuestionIds ?? [])
+
+  return [...active.values()].filter((question) => {
+    if (orderedSet.has(question.id)) {
+      return false
+    }
+
+    return !skipped.has(question.id) || (question.localized ? hasValidEnglish(question) : false)
+  }).length
 }
 
 // Entscheidet, ob eine gespeicherte Abschnitts-Runde gegen den aktuellen Katalog fortgesetzt werden darf.
@@ -111,7 +142,7 @@ export function evaluateSectionSession(session, activeQuestions) {
     currentIndex: session.orderedQuestionIds.indexOf(currentQuestionId),
     currentState: state && state.questionId === currentQuestionId ? state : null,
     // Fragen, die seit Rundenstart zum Abschnitt hinzugekommen sind (erst ab der nächsten Runde).
-    newQuestionCount: [...active.keys()].filter((id) => !orderedSet.has(id)).length,
+    newQuestionCount: newQuestionCountOf(session, active, orderedSet),
     stats: sessionStats(session),
   }
 }

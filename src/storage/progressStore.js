@@ -25,6 +25,7 @@ import {
   migrateSessionReplacements,
   migrateSessionToLibrary,
 } from '../domain/session.js'
+import { LocalizedError, translate, msg } from '../i18n/index.js'
 import { applyReplacementToProgress } from '../domain/replacementMigration.js'
 import {
   isSectionSession,
@@ -47,20 +48,21 @@ const META_SCHEMA_KEY = 'storageSchemaVersion'
 const META_RETIRED_INDEX_KEY = 'retiredIndex'
 
 export class StorageUnavailableError extends Error {
-  constructor(message, cause) {
-    super(message)
+  constructor(key, cause) {
+    super(translate('de', key))
     this.name = 'StorageUnavailableError'
+    this.i18n = msg(key)
     this.cause = cause
   }
 }
 
 export class StorageSchemaError extends Error {
   constructor(foundVersion) {
-    super(
-      `Der lokale Speicher hat eine unbekannte Version (${String(foundVersion)}). ` +
-        `Diese App-Version unterstützt storageSchemaVersion ${STORAGE_SCHEMA_VERSION}.`,
-    )
+    const params = { found: String(foundVersion), supported: STORAGE_SCHEMA_VERSION }
+
+    super(translate('de', 'err.storage.schema', params))
     this.name = 'StorageSchemaError'
+    this.i18n = msg('err.storage.schema', params)
     this.foundVersion = foundVersion
   }
 }
@@ -113,7 +115,7 @@ function openDatabase(factory, dbName) {
     try {
       request = factory.open(dbName, DB_VERSION)
     } catch (error) {
-      reject(new StorageUnavailableError('IndexedDB konnte nicht geöffnet werden.', error))
+      reject(new StorageUnavailableError('err.storage.cannotOpen', error))
       return
     }
 
@@ -128,7 +130,7 @@ function openDatabase(factory, dbName) {
         return
       }
 
-      reject(new StorageUnavailableError('IndexedDB konnte nicht geöffnet werden.', error))
+      reject(new StorageUnavailableError('err.storage.cannotOpen', error))
     }
   })
 }
@@ -152,7 +154,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
 
   function db() {
     if (!database) {
-      throw new StorageUnavailableError('Der lokale Speicher ist nicht initialisiert.')
+      throw new StorageUnavailableError('err.storage.notInitialized')
     }
 
     return database
@@ -166,7 +168,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     const factory = factoryOverride ?? globalThis.indexedDB
 
     if (!factory) {
-      throw new StorageUnavailableError('IndexedDB ist in diesem Browser nicht verfügbar.')
+      throw new StorageUnavailableError('err.storage.unavailable')
     }
 
     const opened = await openDatabase(factory, dbName)
@@ -226,6 +228,9 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       ...(state.title != null && { title: state.title }),
       ...(state.learningSectionId != null && { learningSectionId: state.learningSectionId }),
       ...(state.questionCount != null && { questionCount: state.questionCount }),
+      // additiv (Phase 2F): deklarierte Sprachen und gezählte, strukturell gültige Abdeckung
+      ...(state.languageSupport && { languageSupport: [...state.languageSupport] }),
+      ...(state.contentCoverage && { contentCoverage: { de: state.contentCoverage.de, en: state.contentCoverage.en } }),
     }
   }
 
@@ -405,7 +410,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
 
     if (!session) {
       transaction.abort()
-      throw new Error('Session nicht gefunden.')
+      throw new LocalizedError('err.session.notFound')
     }
 
     const next = transform(session)
@@ -422,6 +427,11 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
   // Wechsel zur nächsten Frage; erst hier ändern sich currentQuestionId/currentIndex.
   function advanceSessionTo({ sessionId, questionId, optionOrder = null }) {
     return updateSession(sessionId, (session) => advanceSession(session, { questionId, optionOrder }))
+  }
+
+  // Ein erlaubter Sprachwechsel innerhalb der laufenden Runde (gleiche Fragenmenge): nur das Sprachfeld ändert sich.
+  function setSessionLanguage(sessionId, sessionLanguage) {
+    return updateSession(sessionId, (session) => ({ ...session, sessionLanguage }))
   }
 
   function completeSessionById(sessionId, completedAt = Date.now()) {
@@ -587,7 +597,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       ])
 
       if (!known || known.activeQuestionIndexHash !== previousHash) {
-        throw new Error('Der gespeicherte Stand hat sich geändert.')
+        throw new LocalizedError('err.update.stateChanged')
       }
 
       const migrated = await migrateReplacements(
@@ -616,6 +626,8 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
         ...(library.title != null && { title: library.title }),
         ...(library.learningSectionId != null && { learningSectionId: library.learningSectionId }),
         ...(library.questionCount != null && { questionCount: library.questionCount }),
+        ...(library.languageSupport && { languageSupport: [...library.languageSupport] }),
+        ...(library.contentCoverage && { contentCoverage: { de: library.contentCoverage.de, en: library.contentCoverage.en } }),
       })
 
       if (migration.migrated) {
@@ -681,6 +693,7 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     markSessionResumed,
     advanceSessionTo,
     completeSessionById,
+    setSessionLanguage,
     recordSessionAnswer,
     applyCompatibleUpdate,
     applyReplacementMigration,

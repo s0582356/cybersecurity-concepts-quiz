@@ -37,6 +37,7 @@ Ziel des Projekts ist es, eine saubere Frontend-Struktur, JSON-basierte Datenmod
 * Sitzungsbasierter Wiederholungsmodus für falsch beantwortete Fragen
 * Sichtbares Label für den Wiederholungsmodus
 * Lokales Laden privater Fragebanken über die Dateiauswahl
+* Deutsche/englische Benutzeroberfläche mit Sprachschalter (die Wahl wird lokal gemerkt)
 * Navigation zur nächsten Frage
 * Neustart über den Ergebnisbildschirm
 * Komponentenbasierte UI-Struktur
@@ -93,6 +94,16 @@ Private Fragebanken können lokal über die Dateiauswahl des Browsers als JSON-D
 Bei V2-Bibliotheken (JSON-Objekte mit `libraryId`) speichert der Browser die importierten Inhalte (Fragen, Antwortoptionen, Erklärungen) lokal in IndexedDB (Object Store `libraryContent`). Dadurch zeigt die App die Bibliotheksübersicht nach einem Seiten-Reload an und kann ohne erneuten Dateiimport weiterlernen. Die Daten bleiben ausschließlich im Browser auf dem eigenen Gerät: kein Server-Upload, kein Cloud-Sync, kein Konto. Lernfortschritt (Bibliotheks-ID, Version, Index-Hash, Lernabschnitt, Zähler je stabiler Frage-ID) und Lernrunden (Fragenreihenfolge als IDs, aktuelle Position, Rundenstand) werden getrennt davon gespeichert. Die Bibliotheken werden automatisch nach Lernabschnitt gruppiert. V1-Fragenlisten werden nicht gespeichert. Nach einem Seiten-Reload genügt es, den Lernabschnitt erneut zu öffnen; ein vollständiger Neustart des Browser-Prozesses wurde noch nicht getestet.
 
 Private lokale Lernmaterialien sollten außerhalb des öffentlichen Quellcodes bleiben und nicht committed, gepusht, deployed oder in Screenshots gezeigt werden. Die privaten JSON-Dateien gehören nie ins öffentliche Repository; echte private Fragen sind weder in öffentlichen Fixtures noch im Build eingebettet.
+
+## Sprachunterstützung (DE/EN)
+
+Die Benutzeroberfläche gibt es auf Deutsch und Englisch. Der Sprachschalter im Seitenkopf stellt alle normalen UI-Texte um (auch Import-Ergebnisse, Update- und Fehlermeldungen) und wird im `localStorage` des Browsers gemerkt (eine kleine, bibliotheksunabhängige Einstellung).
+
+UI-Sprache und Frageninhalt sind getrennt. Eine Frage gilt nur dann als auf Englisch verfügbar, wenn ihr `localized.en` nach dem V2-Schema vollständig ist (Fragetext, Optionen `a`–`d` mit denselben Schlüsseln, Erklärung und `memoryAid` mit gültigem `type` und Text); die App prüft die tatsächliche Struktur und verlässt sich nicht allein auf `languageSupport`. Für englisches Lernen gibt es zwei Modi (laut DE/EN-Content-Contract): **Nur Englisch** (Standard) nimmt nur Fragen mit gültigem Englisch in die Runde auf und zeigt immer an, wie viele Fragen ausgelassen wurden; **Alle verfügbaren Fragen** (Opt-in) enthält jede Frage und zeigt Fragen ohne Englisch auf Deutsch mit sichtbarem Hinweis. Eine Runde mischt Sprachen nie still. Sprache, Modus und ausgelassene Frage-IDs werden mit der Lernrunde gespeichert; eine Runde wird also exakt in der Sprache und mit der Fragenmenge fortgesetzt, mit der sie gestartet wurde – auch wenn sich die globale Spracheinstellung inzwischen geändert hat. Würde ein Sprachwechsel während einer Runde eine andere Fragenmenge erfordern, bleibt die laufende Runde unverändert und du entscheidest bewusst (neue Runde starten oder die laufende fortsetzen).
+
+Es gibt keine automatische Übersetzung zur Laufzeit. Die öffentlichen Beispiel-Fragen und die derzeit verfügbaren privaten Libraries sind nur auf Deutsch; englische Frageninhalte müssen zuerst in den Libraries ergänzt werden (separate, geprüfte Content-Arbeit).
+
+Deutsch und Englisch sind zwei Darstellungen derselben Frage: Question-ID, richtiger Optionsschlüssel, Fortschritt und Lernrunde hängen nicht von der Sprache ab. Ein Sprachwechsel während einer Runde ändert nur die angezeigten Texte (keine neue Runde, kein neues Mischen, keine neue Antwort). Library-Inhalte, Fortschritt und Runden werden wie bisher lokal im Browser gespeichert; nichts wird hochgeladen.
 
 ## Lernworkflow
 

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import QuizCard from './components/QuizCard.vue'
 import ScoreBox from './components/ScoreBox.vue'
 import PrivateQuestionImporter from './components/PrivateQuestionImporter.vue'
@@ -9,19 +9,40 @@ import sampleQuestions from './data/public/sampleQuestions.json'
 import { BATCH_STATUS, planLibraryBatch, summarizeBatch } from './domain/libraryCatalog.js'
 import {
   SESSION_STATUS,
-  applyOptionOrder,
-  evaluateSession,
   isValidOptionOrder,
   optionOrderOf,
   shuffled,
 } from './domain/session.js'
+import {
+  LANGUAGE_MODE,
+  OPTION_KEYS,
+  canPresentRound,
+  isLocalizedQuestion,
+  planRoundQuestions,
+  presentQuestion,
+  relocalizeQuestion,
+} from './domain/questionContent.js'
+import {
+  UI_LOCALES,
+  contentLocale,
+  describeError,
+  languageMode,
+  loadLanguagePreference,
+  msg,
+  setContentLocale,
+  setLanguage,
+  setLanguageMode,
+  t,
+  uiLocale,
+} from './i18n/index.js'
 import { createSectionSessionRecord } from './domain/sectionSession.js'
 import { DB_NAME, createProgressStore } from './storage/progressStore.js'
 import { confirmPendingUpdate, importLibraryBatch } from './storage/catalogImport.js'
 import { buildOverview, buildSectionView, readCatalogData, readSectionData } from './storage/sectionService.js'
 
 const questions = ref(sampleQuestions)
-const questionBankName = ref('Öffentliche Beispiel-Fragen')
+// Name einer einzeln geladenen V1-Datei (sonst: öffentliche Beispiele bzw. der geöffnete Lernabschnitt).
+const v1BankName = ref(null)
 const isQuizStarted = ref(false)
 const isQuizComplete = ref(false)
 const isReviewMode = ref(false)
@@ -42,8 +63,9 @@ const progressStore = createProgressStore()
 const catalog = ref({ sections: [], uncatalogedLibraryIds: [] })
 const activeSection = ref(null)
 const importReport = ref(null)
+// Meldungen sind übersetzbare Deskriptoren, damit ein Sprachwechsel sie mit umstellt.
 const importMessage = ref(null)
-const persistenceWarning = ref('')
+const persistenceWarning = ref(null)
 const librarySummary = ref(null)
 // Phase 2B: Resume-Zustand der V2-Lernrunde (getrennt vom dauerhaften Question Progress).
 const sessionInfo = ref(null)
@@ -60,6 +82,118 @@ let memoryEntries = new Map()
 let catalogToken = 0
 
 const hasCatalog = computed(() => catalog.value.sections.length > 0)
+
+// Phase 2F (Contract-Fix): Sprache und Fragenmenge gehören zur Runde, nicht zur globalen Präferenz.
+// - Eine neue Runde nutzt die globale Präferenz (Inhaltssprache + Modus "Nur Englisch"/"Alle verfügbaren Fragen")
+//   und speichert Sprache, Modus und ausgelassene IDs im Session-Datensatz.
+// - Eine laufende/fortgesetzte Runde nutzt IMMER ihre gespeicherten Werte; die globale Präferenz ändert weder
+//   ihre ID-Menge noch ihre Sprache (ein erlaubter Sprachwechsel in der Runde wird in der Session nachgetragen).
+const roundLanguage = ref(null)
+// Kontrollierte Rückfrage, wenn ein Sprachwechsel die laufende Runde nicht ohne Mengenänderung darstellen kann.
+const languageSwitchNotice = ref(null)
+
+const presentLanguage = computed(() => roundLanguage.value?.language ?? 'de')
+
+const sectionCoverage = computed(() => activeSection.value?.coverage ?? null)
+
+// Auswahl der Lernsprache im Lernabschnitt (nur die globale Präferenz für NEUE Runden).
+const showLanguageChoice = computed(
+  () => Boolean(activeSection.value) && ((sectionCoverage.value?.en ?? 0) > 0 || contentLocale.value === 'en'),
+)
+
+const languageChoice = computed(() => {
+  if (contentLocale.value !== 'en') {
+    return 'de'
+  }
+
+  return languageMode.value === LANGUAGE_MODE.ALL_AVAILABLE ? 'en-all' : 'en-only'
+})
+
+function chooseLanguageOption(option) {
+  setContentLocale(option === 'de' ? 'de' : 'en')
+
+  if (option !== 'de') {
+    setLanguageMode(option === 'en-all' ? LANGUAGE_MODE.ALL_AVAILABLE : LANGUAGE_MODE.ONLY_ENGLISH)
+  }
+}
+
+// Vorschau, welche Fragenmenge die nächste Runde hätte (nur Information).
+const languagePreview = computed(() => {
+  const coverage = sectionCoverage.value
+
+  if (!coverage || contentLocale.value !== 'en') {
+    return null
+  }
+
+  if (languageMode.value === LANGUAGE_MODE.ALL_AVAILABLE) {
+    return coverage.en < coverage.total
+      ? msg('language.preview.allAvailable', { missing: coverage.total - coverage.en })
+      : null
+  }
+
+  if (coverage.en === 0) {
+    return msg('language.noEnglish', { total: coverage.total })
+  }
+
+  return coverage.en < coverage.total
+    ? msg('language.preview.onlyEnglish', { en: coverage.en, total: coverage.total, skipped: coverage.total - coverage.en })
+    : null
+})
+
+// Hinweis zur laufenden Runde (Contract: ausgelassene Fragen müssen sichtbar sein).
+const roundSkippedNotice = computed(() => {
+  const round = roundLanguage.value
+
+  return round?.language === 'en' && round.mode === LANGUAGE_MODE.ONLY_ENGLISH && round.skipped > 0
+    ? msg('language.skipped', { skipped: round.skipped, total: round.total })
+    : null
+})
+
+const contentNotice = computed(() => {
+  if (isQuizStarted.value && roundSkippedNotice.value) {
+    return roundSkippedNotice.value
+  }
+
+  if (!activeSection.value && contentLocale.value === 'en' && (v1BankName.value || isQuizStarted.value)) {
+    return msg('language.contentNotice.bank')
+  }
+
+  return null
+})
+
+// Sprachangabe der gespeicherten Runde im Resume-Panel (und Hinweis, wenn die globale Auswahl abweicht).
+const sessionLanguageInfo = computed(() => {
+  const session = sessionInfo.value?.session
+
+  if (!session || sessionInfo.value.status !== SESSION_STATUS.RESUMABLE) {
+    return null
+  }
+
+  const language = session.sessionLanguage ?? 'de'
+  const mode = language === 'en' ? session.languageMode : null
+  const diverges = (contentLocale.value !== language) || (language === 'en' && languageMode.value !== mode)
+
+  return {
+    language,
+    text:
+      language === 'en'
+        ? msg(mode === LANGUAGE_MODE.ALL_AVAILABLE ? 'session.language.enAll' : 'session.language.enOnly', {
+            count: session.orderedQuestionIds.length,
+          })
+        : null,
+    divergence: diverges ? msg('session.language.divergence') : null,
+  }
+})
+
+const bankLabel = computed(() => {
+  if (activeSection.value) {
+    return t(activeSection.value.label)
+  }
+
+  return v1BankName.value ? t('app.bank.private', { name: v1BankName.value }) : t('app.bank.sample')
+})
+
+const categoryLabel = (name) => (name === 'Allgemein' ? t('category.general') : name)
 const totalQuestions = computed(() => questions.value.length)
 const wrongAnswerCount = computed(() => totalQuestions.value - score.value)
 const scorePercentage = computed(() => {
@@ -80,18 +214,18 @@ const isLastQuestion = computed(() => {
 
 const resultMessage = computed(() => {
   if (scorePercentage.value >= 90) {
-    return 'Security+ Ready'
+    return t('result.msg.ready')
   }
 
   if (scorePercentage.value >= 75) {
-    return 'Prüfungsnah – sehr gut'
+    return t('result.msg.near')
   }
 
   if (scorePercentage.value >= 60) {
-    return 'Solide Basis – wiederholen lohnt sich'
+    return t('result.msg.solid')
   }
 
-  return 'Noch unsicher – Fehlerfragen wiederholen'
+  return t('result.msg.unsure')
 })
 
 const categoryResults = computed(() => {
@@ -119,14 +253,14 @@ const categoryResults = computed(() => {
   return [...categories.values()]
     .map((category) => {
       const percentage = Math.round((category.correct / category.total) * 100)
-      let label = 'Wiederholen'
+      let label = t('result.category.review')
       let statusClass = 'category-review'
 
       if (percentage >= 80) {
-        label = 'Stark'
+        label = t('result.category.strong')
         statusClass = 'category-strong'
       } else if (percentage >= 60) {
-        label = 'Solide'
+        label = t('result.category.solid')
         statusClass = 'category-solid'
       }
 
@@ -148,10 +282,10 @@ const weakCategories = computed(() => {
 
 const learningRecommendation = computed(() => {
   if (weakCategories.value.length > 0) {
-    return `Wiederhole besonders: ${weakCategories.value.join(', ')}`
+    return t('result.recommendation.weak', { names: weakCategories.value.map(categoryLabel).join(', ') })
   }
 
-  return 'Keine klare Schwachstelle in diesem Durchlauf.'
+  return t('result.recommendation.none')
 })
 
 function getQuestionKey(question) {
@@ -182,12 +316,78 @@ function shuffleOptions(options = []) {
   return shuffledOptions
 }
 
-function shuffleOptionsForQuestions(questionList) {
-  return questionList.map((question) => ({
-    ...question,
-    options: shuffleOptions(question.options),
-  }))
+// Lokalisierte V2-Fragen werden über ihre Optionsschlüssel gemischt (Reihenfolge bleibt beim Sprachwechsel erhalten);
+// V1-/Beispielfragen haben keine Sprachfassungen und werden wie bisher über die Texte gemischt.
+function presentShuffled(question, language = presentLanguage.value) {
+  if (!isLocalizedQuestion(question)) {
+    return { ...question, options: shuffleOptions(question.options) }
+  }
+
+  return presentQuestion(question, language, { optionOrder: shuffled(OPTION_KEYS) })
 }
+
+function shuffleOptionsForQuestions(questionList, language) {
+  return questionList.map((question) => presentShuffled(question, language))
+}
+
+// Sprachwechsel (nur Darstellung): gleiche Fragen, gleiche Positionen, gleiche Optionsschlüssel und Auswahl.
+function relocalizeAll(locale) {
+  const shown = questions.value[currentQuestionIndex.value]
+  const selectedKey = shown && selectedAnswer.value !== null ? optionKeyOf(shown, selectedAnswer.value) : null
+
+  questions.value = questions.value.map((question) => relocalizeQuestion(question, locale))
+  incorrectlyAnsweredQuestions.value = incorrectlyAnsweredQuestions.value.map((question) =>
+    relocalizeQuestion(question, locale),
+  )
+
+  if (selectedKey) {
+    selectedAnswer.value = questions.value[currentQuestionIndex.value]?.optionTextByKey?.[selectedKey] ?? selectedAnswer.value
+  }
+}
+
+// Sprachwechsel über den Schalter: Oberfläche und Inhaltspräferenz folgen immer; die laufende Runde wechselt
+// nur, wenn ihre feste Fragenmenge in der Zielsprache darstellbar ist. Sonst bleibt sie unverändert und der
+// Nutzer entscheidet kontrolliert (neue Runde oder weiter in der bisherigen Sprache).
+function switchLanguage(code) {
+  setLanguage(code)
+  languageSwitchNotice.value = null
+
+  const round = roundLanguage.value
+
+  if (!isQuizStarted.value || !round || round.language === code) {
+    return
+  }
+
+  const check = canPresentRound(questions.value, { language: code, mode: round.mode })
+
+  if (!check.possible) {
+    languageSwitchNotice.value = { missing: check.missing, total: questions.value.length, target: code }
+    return
+  }
+
+  roundLanguage.value = { ...round, language: code }
+  relocalizeAll(code)
+
+  if (activeSessionId.value && !isReviewMode.value) {
+    const sessionId = activeSessionId.value
+
+    queueWrite(() => progressStore.setSessionLanguage(sessionId, code), 'warn.sessionNotSaved')
+  }
+}
+
+function keepRoundLanguage() {
+  // Bewusste Entscheidung: die laufende Runde bleibt in ihrer Sprache, auch die Inhaltspräferenz folgt ihr.
+  languageSwitchNotice.value = null
+  setContentLocale(presentLanguage.value)
+}
+
+function startNewRoundInSwitchedLanguage() {
+  languageSwitchNotice.value = null
+  return startLearningSession()
+}
+
+// Barrierefreiheit: die Dokumentsprache folgt der Oberflächensprache.
+watch(uiLocale, (locale) => document.documentElement.setAttribute('lang', locale), { immediate: true })
 
 function resetQuizProgress({ clearIncorrectAnswers = true } = {}) {
   currentQuestionIndex.value = 0
@@ -222,7 +422,19 @@ function optionKeyOf(question, option) {
 // Neue V2-Lernrunde: Reihenfolge wird einmal erzeugt und persistiert (kein Neu-Shuffle beim Reload).
 // Ersetzt eine vorhandene Session der Bibliothek; dauerhafter Question Progress bleibt erhalten.
 async function startLearningSession() {
-  const orderedQuestions = shuffled(shuffleOptionsForQuestions(originalQuestions.value))
+  // Fragenmenge und Sprache der neuen Runde nach Contract: Deutsch = alle; Englisch = "Nur Englisch" (gültiges EN)
+  // bzw. "Alle verfügbaren Fragen" (fehlendes EN sichtbar als deutscher Fallback).
+  const plan = planRoundQuestions(originalQuestions.value, { language: contentLocale.value, mode: languageMode.value })
+
+  if (plan.questions.length === 0) {
+    importMessage.value = { type: 'error', message: msg('language.noEnglish', { total: originalQuestions.value.length }) }
+    return
+  }
+
+  importMessage.value = null
+  languageSwitchNotice.value = null
+
+  const orderedQuestions = shuffled(shuffleOptionsForQuestions(plan.questions, plan.language))
   activeSessionId.value = null
   await pendingWrites
 
@@ -234,15 +446,24 @@ async function startLearningSession() {
         libraries: activeSection.value.libraries,
         orderedQuestions,
         optionOrder: optionOrderOf(orderedQuestions[0]),
+        sessionLanguage: plan.language,
+        languageMode: plan.mode,
+        skippedQuestionIds: plan.skippedQuestionIds,
       })
 
       await progressStore.startNewSession(session)
       activeSessionId.value = session.sessionId
     } catch (error) {
-      persistenceWarning.value = `Lernrunde wird nicht gespeichert: ${error.message}`
+      persistenceWarning.value = msg('warn.sessionNotStored', { detail: describeError(error) })
     }
   }
 
+  roundLanguage.value = {
+    language: plan.language,
+    mode: plan.mode,
+    skipped: plan.skippedQuestionIds.length,
+    total: originalQuestions.value.length,
+  }
   questions.value = orderedQuestions
   isReviewMode.value = false
   resetQuizProgress()
@@ -259,16 +480,25 @@ async function resumeLearningSession() {
 
   const { session } = info
   const restoredOrder = info.currentState?.optionOrder
+  // Sprache und Modus kommen aus der gespeicherten Runde (nicht aus der globalen Präferenz); ältere Runden: Deutsch.
+  const language = session.sessionLanguage ?? 'de'
   const resumedQuestions = info.orderedQuestions.map((question) => {
     if (question.id === info.currentQuestionId && isValidOptionOrder(restoredOrder)) {
-      return applyOptionOrder(question, restoredOrder)
+      return presentQuestion(question, language, { optionOrder: restoredOrder })
     }
 
-    return { ...question, options: shuffleOptions(question.options) }
+    return presentShuffled(question, language)
   })
   const questionsById = new Map(resumedQuestions.map((question) => [question.id, question]))
   const correctIds = new Set(session.correctQuestionIds)
 
+  roundLanguage.value = {
+    language,
+    mode: session.languageMode ?? null,
+    skipped: session.skippedQuestionIds?.length ?? 0,
+    total: session.orderedQuestionIds.length + (session.skippedQuestionIds?.length ?? 0),
+  }
+  languageSwitchNotice.value = null
   questions.value = resumedQuestions
   isReviewMode.value = false
   resetQuizProgress()
@@ -309,7 +539,7 @@ async function resumeLearningSession() {
   isQuizStarted.value = true
 
   const sessionId = session.sessionId
-  queueWrite(() => progressStore.markSessionResumed(sessionId), 'Lernrunde konnte nicht aktualisiert werden')
+  queueWrite(() => progressStore.markSessionResumed(sessionId), 'warn.sessionNotUpdated')
 }
 
 function selectAnswer(option) {
@@ -369,7 +599,7 @@ function nextQuestion() {
           questionId: next.id,
           optionOrder: optionOrderOf(next),
         }),
-      'Lernrunde konnte nicht gespeichert werden',
+      'warn.sessionNotSaved',
     )
   }
 }
@@ -383,7 +613,7 @@ function finishQuiz() {
     activeSessionId.value = null
     queueWrite(
       () => progressStore.completeSessionById(sessionId),
-      'Lernrunde konnte nicht abgeschlossen werden',
+      'warn.sessionNotCompleted',
     )
   }
 }
@@ -411,6 +641,8 @@ function repeatIncorrectQuestions() {
 }
 
 function showQuestionBankSelection() {
+  roundLanguage.value = null
+  languageSwitchNotice.value = null
   questions.value = originalQuestions.value
   isReviewMode.value = false
   isQuizStarted.value = false
@@ -430,8 +662,8 @@ function ensureStorage() {
         return true
       })
       .catch((error) => {
-        storageError = error.message
-        persistenceWarning.value = `Fortschritt wird nicht gespeichert: ${error.message}`
+        storageError = describeError(error)
+        persistenceWarning.value = msg('warn.progressNotStored', { detail: describeError(error) })
         return false
       })
   }
@@ -440,7 +672,7 @@ function ensureStorage() {
 }
 
 // Schreibaufträge laufen nacheinander (Antwort → Weiter → Abschluss behalten ihre Reihenfolge).
-function queueWrite(task, failureMessage) {
+function queueWrite(task, failureKey) {
   pendingWrites = pendingWrites
     .then(async () => {
       if (await storageReady) {
@@ -448,7 +680,7 @@ function queueWrite(task, failureMessage) {
       }
     })
     .catch((error) => {
-      persistenceWarning.value = `${failureMessage}: ${error.message}`
+      persistenceWarning.value = msg(failureKey, { detail: describeError(error) })
     })
 }
 
@@ -482,7 +714,7 @@ function persistAnswer(question, isCorrect, option) {
     }
 
     await progressStore.recordAnswer(answer)
-  }, 'Fortschritt konnte nicht gespeichert werden')
+  }, 'warn.progressNotSaved')
 }
 
 const sessionPanel = computed(() => {
@@ -494,42 +726,45 @@ const sessionPanel = computed(() => {
 
   if (info.status === SESSION_STATUS.COMPLETED) {
     return {
-      title: 'Lernrunde abgeschlossen',
-      text: `Letzte Runde: ${info.stats.correctCount} richtig, ${info.stats.incorrectCount} falsch von ${info.stats.totalCount} Fragen.`,
-      discardLabel: 'Neue Runde starten',
+      title: t('session.completed.title'),
+      text: t('session.completed.text', {
+        correct: info.stats.correctCount,
+        incorrect: info.stats.incorrectCount,
+        total: info.stats.totalCount,
+      }),
+      discardLabel: t('session.completed.discard'),
     }
   }
 
   if (info.status === SESSION_STATUS.RESUMABLE) {
     const { stats } = info
-    const newQuestions =
-      info.newQuestionCount > 0
-        ? ` · ${info.newQuestionCount} neue Fragen im Lernabschnitt kommen erst ab der nächsten Runde dazu`
-        : ''
 
     return {
-      title: 'Lernrunde läuft',
-      text:
-        `Frage ${info.currentIndex + 1} von ${stats.totalCount} · ${stats.answeredCount} beantwortet · ` +
-        `${stats.correctCount} richtig · ${stats.incorrectCount} falsch · ${stats.remainingCount} offen${newQuestions}`,
-      discardLabel: 'Aktuelle Runde verwerfen und neu starten',
+      title: t('session.running.title'),
+      text: t('session.running.text', {
+        current: info.currentIndex + 1,
+        total: stats.totalCount,
+        answered: stats.answeredCount,
+        correct: stats.correctCount,
+        incorrect: stats.incorrectCount,
+        remaining: stats.remainingCount,
+        extra: info.newQuestionCount > 0 ? t('session.running.newQuestions', { count: info.newQuestionCount }) : '',
+      }),
+      discardLabel: t('session.running.discard'),
     }
   }
 
   const reasons = {
-    questionsChanged: `Die Fragen dieses Lernabschnitts passen nicht zur gespeicherten Runde (${info.missingQuestionIds?.length ?? 0} fehlen).`,
-    revisionsChanged: `${info.revisedQuestionIds?.length ?? 0} Fragen wurden seit Rundenstart überarbeitet.`,
-    currentQuestionMissing: 'Die gespeicherte Position ist nicht auffindbar.',
-    invalidSession: 'Die gespeicherte Runde ist nicht lesbar.',
+    questionsChanged: t('session.reason.questionsChanged', { missing: info.missingQuestionIds?.length ?? 0 }),
+    revisionsChanged: t('session.reason.revisionsChanged', { count: info.revisedQuestionIds?.length ?? 0 }),
+    currentQuestionMissing: t('session.reason.currentQuestionMissing'),
+    invalidSession: t('session.reason.invalidSession'),
   }
 
   return {
-    title: 'Lernrunde kann nicht fortgesetzt werden',
-    text:
-      `${reasons[info.reason]} Diese Runde kann nicht mehr angepasst werden und lässt sich nur ` +
-      'verwerfen und neu starten. Sie bleibt bis dahin gespeichert; ' +
-      'dein dauerhafter Fortschritt ist nicht betroffen.',
-    discardLabel: 'Runde verwerfen und neu starten',
+    title: t('session.blocked.title'),
+    text: t('session.blocked.text', { reason: reasons[info.reason] }),
+    discardLabel: t('session.blocked.discard'),
   }
 })
 
@@ -551,7 +786,7 @@ async function refreshCatalog() {
       next = buildOverview(await readCatalogData(progressStore))
     }
   } catch (error) {
-    persistenceWarning.value = `Bibliothek konnte nicht gelesen werden: ${error.message}`
+    persistenceWarning.value = msg('warn.libraryNotRead', { detail: describeError(error) })
   }
 
   if (token === catalogToken) {
@@ -598,7 +833,7 @@ async function refreshSection(sectionId = activeSection.value?.sectionId) {
       return false
     }
   } catch (error) {
-    persistenceWarning.value = `Lernabschnitt konnte nicht gelesen werden: ${error.message}`
+    persistenceWarning.value = msg('warn.sectionNotRead', { detail: describeError(error) })
     return false
   }
 
@@ -608,7 +843,7 @@ async function refreshSection(sectionId = activeSection.value?.sectionId) {
     activeSection.value = null
     librarySummary.value = null
     sessionInfo.value = null
-    importMessage.value = { type: 'error', text: `${view.label}: ${view.error}` }
+    importMessage.value = { type: 'error', message: msg('section.error', { label: view.label, message: view.error }) }
     return false
   }
 
@@ -618,8 +853,9 @@ async function refreshSection(sectionId = activeSection.value?.sectionId) {
     libraries: view.libraries,
     ephemeral: memoryEntries.size > 0,
   }
+  activeSection.value.coverage = view.coverage
   originalQuestions.value = view.questions
-  questionBankName.value = view.label
+  v1BankName.value = null
   librarySummary.value = view.summary
   sessionInfo.value = view.evaluation
 
@@ -634,7 +870,9 @@ async function openSection(sectionId) {
     return
   }
 
-  questions.value = shuffleOptionsForQuestions(originalQuestions.value)
+  roundLanguage.value = null
+  languageSwitchNotice.value = null
+  questions.value = shuffleOptionsForQuestions(originalQuestions.value, 'de')
   isReviewMode.value = false
   isQuizStarted.value = false
   resetQuizProgress()
@@ -666,13 +904,15 @@ async function initializeCatalog() {
 }
 
 function loadV1Bank({ questions: importedQuestions, fileName }) {
+  roundLanguage.value = null
+  languageSwitchNotice.value = null
   activeSection.value = null
   activeSessionId.value = null
   librarySummary.value = null
   sessionInfo.value = null
   originalQuestions.value = importedQuestions
   questions.value = shuffleOptionsForQuestions(importedQuestions)
-  questionBankName.value = `Private Fragebank: ${fileName}`
+  v1BankName.value = fileName
   isReviewMode.value = false
   isQuizStarted.value = false
   resetQuizProgress()
@@ -691,7 +931,7 @@ async function importWithoutStorage(entries) {
       title: entry.library.title,
       learningSectionId: entry.library.learningSectionId,
       status: BATCH_STATUS.NEW,
-      message: 'Nur für diese Sitzung geladen, da der lokale Speicher nicht verfügbar ist.',
+      message: msg('result.memoryOnly'),
     })
   })
 
@@ -700,7 +940,7 @@ async function importWithoutStorage(entries) {
     summary: summarizeBatch(entries, plan.importable),
     pendingLibraryIds: [],
   }
-  persistenceWarning.value = `Fortschritt wird nicht gespeichert: ${storageError || 'Speicher nicht verfügbar.'}`
+  persistenceWarning.value = msg('warn.progressNotStored', { detail: storageError || msg('warn.storageUnavailable') })
   await refreshCatalog()
 }
 
@@ -733,7 +973,7 @@ async function importBatch(entries) {
       pendingLibraryIds: [...batch.pending.keys()],
     }
   } catch (error) {
-    persistenceWarning.value = `Fortschritt wird nicht gespeichert: ${error.message}`
+    persistenceWarning.value = msg('warn.progressNotStored', { detail: describeError(error) })
     return
   }
 
@@ -743,7 +983,7 @@ async function importBatch(entries) {
 
 async function handleFilesLoaded(entries) {
   importMessage.value = null
-  persistenceWarning.value = ''
+  persistenceWarning.value = null
   importReport.value = null
   pendingEntries = new Map()
 
@@ -778,17 +1018,19 @@ async function confirmLibraryUpdate(libraryId) {
     await pendingWrites
     await confirmPendingUpdate(progressStore, entry, { retiredIndex: retiredIndex.value })
   } catch (error) {
-    setResult({ status: BATCH_STATUS.REJECTED, message: `Aktualisierung nicht möglich: ${error.message}` })
+    setResult({ status: BATCH_STATUS.REJECTED, message: msg('result.confirmFailed', { detail: describeError(error) }) })
     return
   }
 
   setResult({
     status: BATCH_STATUS.VERSION_UPDATED,
-    message: `Bibliothek auf Version ${entry.library.libraryVersion} aktualisiert. Dein Fortschritt bleibt erhalten.`,
+    message: msg('result.confirmDone', { version: entry.library.libraryVersion }),
   })
   await refreshCatalog()
   await openSection(entry.library.learningSectionId)
 }
+
+loadLanguagePreference()
 
 onMounted(initializeCatalog)
 onBeforeUnmount(() => progressStore.close())
@@ -797,17 +1039,38 @@ onBeforeUnmount(() => progressStore.close())
 <template>
   <main class="app-shell">
     <section class="hero-section">
-      <p class="eyebrow">Cybersecurity Concepts Quiz</p>
-      <h1>Trainiere wichtige Security-Grundlagen</h1>
-      <p class="intro">
-        Eine kleine Vue.js-Lern-App mit neutralen Beispiel-Fragen zu allgemeinen
-        Cybersecurity-Konzepten.
-      </p>
-      <p class="question-bank-label">{{ questionBankName }}</p>
-      <p v-if="isReviewMode" class="review-mode-label">Wiederholung falscher Fragen</p>
+      <div class="language-switch" role="group" :aria-label="t('language.switch')">
+        <button
+          v-for="code in UI_LOCALES"
+          :key="code"
+          class="language-button"
+          :class="{ 'language-button-active': uiLocale === code }"
+          type="button"
+          :aria-pressed="uiLocale === code"
+          :title="t(`language.${code}`)"
+          @click="switchLanguage(code)"
+        >
+          {{ code.toUpperCase() }}
+        </button>
+      </div>
+      <p class="eyebrow">{{ t('app.eyebrow') }}</p>
+      <h1>{{ t('app.title') }}</h1>
+      <p class="intro">{{ t('app.intro') }}</p>
+      <p class="question-bank-label">{{ bankLabel }}</p>
+      <p v-if="isReviewMode" class="review-mode-label">{{ t('app.reviewMode') }}</p>
+      <p v-if="contentNotice" class="language-note" role="status">{{ t(contentNotice) }}</p>
+      <div v-if="languageSwitchNotice" class="language-note language-switch-notice" role="alert">
+        <p>{{ t('language.switchBlocked', languageSwitchNotice) }}</p>
+        <button class="primary-button" type="button" @click="startNewRoundInSwitchedLanguage">
+          {{ t('language.switchBlocked.newRound') }}
+        </button>
+        <button class="secondary-button" type="button" @click="keepRoundLanguage">
+          {{ t('language.switchBlocked.keep') }}
+        </button>
+      </div>
     </section>
 
-    <section v-if="!isQuizStarted" class="start-layout" aria-label="Quiz vorbereiten">
+    <section v-if="!isQuizStarted" class="start-layout" :aria-label="t('app.prepare')">
       <PrivateQuestionImporter :empty="!hasCatalog" @files-loaded="handleFilesLoaded" />
 
       <p
@@ -816,15 +1079,14 @@ onBeforeUnmount(() => progressStore.close())
         :class="`library-message-${importMessage.type}`"
         role="status"
       >
-        {{ importMessage.text }}
+        {{ t(importMessage.message) }}
       </p>
       <ImportReport v-if="importReport" :report="importReport" @confirm-update="confirmLibraryUpdate" />
       <p v-if="persistenceWarning" class="library-message library-message-warning" role="alert">
-        {{ persistenceWarning }}
+        {{ t(persistenceWarning) }}
       </p>
       <p v-if="catalog.uncatalogedLibraryIds.length > 0" class="section-note">
-        {{ catalog.uncatalogedLibraryIds.length }} früher gespeicherte Bibliotheken enthalten noch keine lokalen
-        Fragen. Bitte importiere ihre Dateien einmal erneut; dein Fortschritt bleibt dabei erhalten.
+        {{ t('section.uncataloged', { count: catalog.uncatalogedLibraryIds.length }) }}
       </p>
 
       <SectionOverview
@@ -833,33 +1095,65 @@ onBeforeUnmount(() => progressStore.close())
         @open-section="openSection"
       />
 
-      <section v-if="activeSection" class="start-card" aria-label="Lernabschnitt">
-        <h2>{{ activeSection.label }}</h2>
+      <section v-if="activeSection" class="start-card" :aria-label="t('section.detail')">
+        <h2>{{ t(activeSection.label) }}</h2>
         <p>
-          {{ activeSection.libraries.length }}
-          {{ activeSection.libraries.length === 1 ? 'Library' : 'Libraries' }} · {{ originalQuestions.length }} Fragen
+          {{ t('section.libraries', { count: activeSection.libraries.length }) }} ·
+          {{ t('section.questions', { count: originalQuestions.length }) }}
         </p>
       </section>
 
-      <section v-if="librarySummary" class="start-card" aria-label="Gespeicherter Fortschritt">
-        <h2>Gespeicherter Fortschritt</h2>
+      <section v-if="showLanguageChoice" class="start-card language-choice" :aria-label="t('language.choice.label')">
+        <h2>{{ t('language.choice.title') }}</h2>
+        <div class="language-options" role="group" :aria-label="t('language.choice.label')">
+          <button
+            v-for="option in ['de', 'en-only', 'en-all']"
+            :key="option"
+            class="language-option"
+            :class="{ 'language-option-active': languageChoice === option }"
+            type="button"
+            :data-option="option"
+            :aria-pressed="languageChoice === option"
+            @click="chooseLanguageOption(option)"
+          >
+            {{ t(`language.choice.${option}`, { en: sectionCoverage?.en ?? 0, total: sectionCoverage?.total ?? 0 }) }}
+          </button>
+        </div>
+        <p v-if="languagePreview" class="language-preview">{{ t(languagePreview) }}</p>
+      </section>
+
+      <section v-if="librarySummary" class="start-card" :aria-label="t('progress.title')">
+        <h2>{{ t('progress.title') }}</h2>
         <p>
-          Beantwortet: {{ librarySummary.answeredCount }} von {{ librarySummary.totalQuestions }}
-          · zuletzt richtig: {{ librarySummary.lastCorrectCount }}
-          · zuletzt falsch: {{ librarySummary.lastIncorrectCount }}
-          · Versuche gesamt: {{ librarySummary.totalAttempts }}
+          {{
+            t('progress.summary', {
+              answered: librarySummary.answeredCount,
+              total: librarySummary.totalQuestions,
+              correct: librarySummary.lastCorrectCount,
+              incorrect: librarySummary.lastIncorrectCount,
+              attempts: librarySummary.totalAttempts,
+            })
+          }}
         </p>
         <ul v-if="librarySummary.answeredCount > 0" class="progress-category-list">
           <li v-for="category in librarySummary.categories" :key="category.name">
-            {{ category.name }}: {{ category.answered }}/{{ category.total }} beantwortet,
-            {{ category.lastCorrect }} zuletzt richtig
+            {{
+              t('progress.category', {
+                name: categoryLabel(category.name),
+                answered: category.answered,
+                total: category.total,
+                correct: category.lastCorrect,
+              })
+            }}
           </li>
         </ul>
       </section>
 
-      <section v-if="sessionPanel" class="start-card" aria-label="Lernrunde">
+      <section v-if="sessionPanel" class="start-card" :aria-label="t('session.label')">
         <h2>{{ sessionPanel.title }}</h2>
         <p>{{ sessionPanel.text }}</p>
+        <p v-if="sessionLanguageInfo?.text" class="session-language">{{ t(sessionLanguageInfo.text) }}</p>
+        <p v-if="sessionLanguageInfo?.divergence" class="session-language">{{ t(sessionLanguageInfo.divergence) }}</p>
 
         <button
           v-if="sessionInfo.status === 'resumable'"
@@ -867,7 +1161,7 @@ onBeforeUnmount(() => progressStore.close())
           type="button"
           @click="resumeLearningSession"
         >
-          Lernrunde fortsetzen
+          {{ t('session.resume') }}
         </button>
         <button class="secondary-button" type="button" @click="startLearningSession">
           {{ sessionPanel.discardLabel }}
@@ -875,58 +1169,56 @@ onBeforeUnmount(() => progressStore.close())
       </section>
 
       <section v-else-if="activeSection" class="start-card">
-        <h2>Lernrunde bereit</h2>
-        <p>Die Runde enthält alle Fragen dieses Lernabschnitts in gemischter Reihenfolge.</p>
+        <h2>{{ t('section.ready.title') }}</h2>
+        <p>{{ t('section.ready.text') }}</p>
 
-        <button class="start-button" type="button" @click="startQuiz">Lernrunde starten</button>
+        <button class="start-button" type="button" @click="startQuiz">{{ t('section.ready.start') }}</button>
       </section>
 
       <section v-else class="start-card">
-        <h2>Quiz bereit</h2>
-        <p>
-          Du kannst mit den öffentlichen Beispiel-Fragen starten oder vorher eine
-          private lokale JSON-Fragebank auswählen.
-        </p>
+        <h2>{{ t('quiz.ready.title') }}</h2>
+        <p>{{ t('quiz.ready.text') }}</p>
 
         <button class="start-button" type="button" @click="startQuiz">
-          Mit aktueller Fragebank starten
+          {{ t('quiz.ready.start') }}
         </button>
       </section>
     </section>
 
     <section v-else-if="isQuizComplete" class="result-card">
       <p class="eyebrow">
-        {{ isReviewMode ? 'Wiederholung abgeschlossen' : 'Quiz abgeschlossen' }}
+        {{ isReviewMode ? t('result.eyebrow.review') : t('result.eyebrow.done') }}
       </p>
-      <h2>Auswertung</h2>
+      <h2>{{ t('result.title') }}</h2>
 
-      <div class="result-grid" aria-label="Ergebnisübersicht">
+      <div class="result-grid" :aria-label="t('result.grid.label')">
         <div>
-          <span>Gesamtfragen</span>
+          <span>{{ t('result.total') }}</span>
           <strong>{{ totalQuestions }}</strong>
         </div>
         <div>
-          <span>Richtige Antworten</span>
+          <span>{{ t('result.correct') }}</span>
           <strong>{{ score }}</strong>
         </div>
         <div>
-          <span>Falsche Antworten</span>
+          <span>{{ t('result.wrong') }}</span>
           <strong>{{ wrongAnswerCount }}</strong>
         </div>
         <div>
-          <span>Prozentwert</span>
+          <span>{{ t('result.percent') }}</span>
           <strong>{{ scorePercentage }}%</strong>
         </div>
         <div>
-          <span>Beste Serie</span>
+          <span>{{ t('result.bestStreak') }}</span>
           <strong>{{ bestStreak }}</strong>
         </div>
       </div>
 
       <p class="result-message">{{ resultMessage }}</p>
+      <p v-if="roundSkippedNotice" class="language-note" role="status">{{ t(roundSkippedNotice) }}</p>
 
-      <section class="category-summary" aria-label="Kategorie-Auswertung">
-        <h3>Kategorie-Auswertung</h3>
+      <section class="category-summary" :aria-label="t('result.categories.label')">
+        <h3>{{ t('result.categories.title') }}</h3>
         <div class="category-list">
           <article
             v-for="category in categoryResults"
@@ -935,8 +1227,16 @@ onBeforeUnmount(() => progressStore.close())
             :class="category.statusClass"
           >
             <div>
-              <h4>{{ category.name }}</h4>
-              <p>{{ category.correct }}/{{ category.total }} richtig ({{ category.percentage }}%)</p>
+              <h4>{{ categoryLabel(category.name) }}</h4>
+              <p>
+                {{
+                  t('result.categories.line', {
+                    correct: category.correct,
+                    total: category.total,
+                    percent: category.percentage,
+                  })
+                }}
+              </p>
             </div>
             <span>{{ category.label }}</span>
           </article>
@@ -944,7 +1244,7 @@ onBeforeUnmount(() => progressStore.close())
         <p class="learning-recommendation">{{ learningRecommendation }}</p>
       </section>
       <p v-if="incorrectlyAnsweredQuestions.length === 0" class="perfect-message">
-        Perfekt – keine Fehler zum Wiederholen.
+        {{ t('result.perfect') }}
       </p>
 
       <div class="result-actions">
@@ -954,13 +1254,13 @@ onBeforeUnmount(() => progressStore.close())
           type="button"
           @click="repeatIncorrectQuestions"
         >
-          Falsche Fragen wiederholen
+          {{ t('result.repeatWrong') }}
         </button>
         <button class="secondary-button" type="button" @click="restartWithCurrentQuestionBank">
-          Neu starten
+          {{ t('result.restart') }}
         </button>
         <button class="secondary-button" type="button" @click="showQuestionBankSelection">
-          Andere Fragebank laden
+          {{ t('result.otherBank') }}
         </button>
       </div>
     </section>
@@ -986,19 +1286,19 @@ onBeforeUnmount(() => progressStore.close())
     </section>
 
     <section v-else class="question-card">
-      <h2>Keine Fragen gefunden</h2>
-      <p>Bitte prüfe die Datei src/data/public/sampleQuestions.json.</p>
+      <h2>{{ t('quiz.noQuestions.title') }}</h2>
+      <p>{{ t('quiz.noQuestions.text') }}</p>
     </section>
 
-    <footer class="app-footer" aria-label="Projektinformationen">
-      <span>Version 0.3.0</span>
-      <span>Component refactor</span>
+    <footer class="app-footer" :aria-label="t('app.footer.label')">
+      <span>{{ t('app.footer.version') }}</span>
+      <span>{{ t('app.footer.refactor') }}</span>
       <a
         href="https://github.com/s0582356/cybersecurity-concepts-quiz"
         target="_blank"
         rel="noreferrer"
       >
-        GitHub
+        {{ t('app.footer.github') }}
       </a>
     </footer>
   </main>

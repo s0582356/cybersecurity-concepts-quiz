@@ -1,4 +1,6 @@
 <script setup>
+import { t } from '../i18n/index.js'
+
 defineProps({
   currentQuestionIndex: {
     type: Number,
@@ -25,18 +27,18 @@ defineProps({
 
 <template>
   <aside class="score-card">
-    <h2>Fortschritt</h2>
+    <h2>{{ t('score.title') }}</h2>
     <p>
-      Frage {{ currentQuestionIndex + 1 }} von {{ totalQuestions }}
+      {{ t('score.position', { current: currentQuestionIndex + 1, total: totalQuestions }) }}
     </p>
     <p>
-      Score: <strong>{{ score }}</strong>
+      {{ t('score.score') }} <strong>{{ score }}</strong>
     </p>
     <p>
-      Aktuelle Serie: <strong>{{ currentStreak }}</strong>
+      {{ t('score.streak') }} <strong>{{ currentStreak }}</strong>
     </p>
     <p>
-      Beste Serie: <strong>{{ bestStreak }}</strong>
+      {{ t('score.best') }} <strong>{{ bestStreak }}</strong>
     </p>
   </aside>
 </template>

@@ -7,6 +7,7 @@
 
 import { CHANGE_KIND, classifyHashChange, compareVersions } from '../domain/libraryUpdate.js'
 import { findDuplicateQuestionIds } from '../domain/libraryCatalog.js'
+import { LocalizedError, msg } from '../i18n/index.js'
 
 export { CHANGE_KIND }
 
@@ -33,13 +34,21 @@ function catalogFields(library) {
   }
 }
 
+// Phase 2F: Sprachabdeckung gehört zu den gespeicherten Fragen und wird nur gemeinsam mit ihnen geschrieben.
+function languageFields(library) {
+  return {
+    ...(library.languageSupport && { languageSupport: library.languageSupport }),
+    ...(library.contentCoverage && { contentCoverage: library.contentCoverage }),
+  }
+}
+
 // Dieselbe aktive Question-ID darf nicht in zwei Libraries aktiv sein (Contract). Nichts wird überschrieben.
 async function checkRules(store, library, known) {
   if (known?.learningSectionId && library.learningSectionId && known.learningSectionId !== library.learningSectionId) {
     return {
       status: IMPORT_STATUS.REJECTED,
       reason: REJECT_REASON.SECTION_CHANGED,
-      message: `Der Lernabschnitt der Library hat sich geändert (${known.learningSectionId} → ${library.learningSectionId}).`,
+      message: msg('reject.sectionChanged', { from: known.learningSectionId, to: library.learningSectionId }),
     }
   }
 
@@ -51,7 +60,7 @@ async function checkRules(store, library, known) {
       status: IMPORT_STATUS.REJECTED,
       reason: REJECT_REASON.DUPLICATE_QUESTION_IDS,
       conflictingLibraryIds: [...clash.libraries].sort(),
-      message: `${clash.ids.length} aktive Question-IDs sind auch in ${[...clash.libraries].sort().join(', ')} aktiv.`,
+      message: msg('reject.duplicateIds', { count: clash.ids.length, libraries: [...clash.libraries].sort().join(', ') }),
     }
   }
 
@@ -79,6 +88,7 @@ export async function registerLibraryImport(
       firstImportedAt: now,
       lastAccessedAt: now,
       ...catalogFields(library),
+      ...(questions && languageFields(library)),
     }
 
     await store.upsertLibraryState(libraryState, { questions })
@@ -99,6 +109,10 @@ export async function registerLibraryImport(
   // Gleicher Hash: Fortschritt und Session bleiben. Eine höhere Version wird übernommen,
   // eine ältere Datei senkt die gespeicherte Version nicht.
   const versionRelation = compareVersions(library.libraryVersion, known.libraryVersion)
+  // Fragen werden gespeichert, wenn sie fehlen (Zustand ≤ 2D) oder die Datei eine höhere Version hat.
+  const needsContent =
+    Boolean(questions) &&
+    (versionRelation > 0 || !known.learningSectionId || !(await store.getLibraryContent(library.libraryId)))
   const libraryState = {
     ...known,
     libraryVersion: versionRelation > 0 ? library.libraryVersion : known.libraryVersion,
@@ -108,9 +122,9 @@ export async function registerLibraryImport(
     ...(versionRelation > 0 && { updatedAt: now }),
     // Zustände aus Phase ≤ 2D kennen Abschnitt/Titel noch nicht: nachtragen (Fortschritt bleibt unberührt).
     ...catalogFields(library),
+    // Sprachabdeckung ändert sich nur zusammen mit den gespeicherten Fragen.
+    ...(needsContent && languageFields(library)),
   }
-  // Fragen werden gespeichert, wenn sie fehlen (Zustand ≤ 2D) oder die Datei eine höhere Version hat.
-  const needsContent = Boolean(questions) && (versionRelation > 0 || !known.learningSectionId || !(await store.getLibraryContent(library.libraryId)))
 
   await store.upsertLibraryState(libraryState, { questions: needsContent ? questions : null })
 
@@ -131,13 +145,13 @@ export async function applyLibraryUpdate(store, library, { now = Date.now(), ret
   const known = await store.getLibraryState(library.libraryId)
 
   if (!known || known.activeQuestionIndexHash === library.activeQuestionIndexHash) {
-    throw new Error('Kein Update zu übernehmen.')
+    throw new LocalizedError('err.update.none')
   }
 
   const rejection = await checkRules(store, library, known)
 
   if (rejection) {
-    throw new Error(rejection.message)
+    throw new LocalizedError(rejection.message.i18n, rejection.message.params)
   }
 
   const classification = classifyHashChange(known, library, {
@@ -146,7 +160,7 @@ export async function applyLibraryUpdate(store, library, { now = Date.now(), ret
   })
 
   if (!classification.compatible) {
-    throw new Error('Diese Änderung kann noch nicht übernommen werden.')
+    throw new LocalizedError('err.update.incompatible')
   }
 
   return store.applyCompatibleUpdate({

@@ -11,6 +11,10 @@ export function makeSyntheticLibrary({
   idPrefix = 'sec-a30',
   learningSectionId = 'la99',
   questionLabel = 'Synthetische Frage',
+  // Phase 2F: 'all' | 'none' | Liste von IDs mit englischer Fassung; `englishOverrides` ersetzt/zerstört einzelne EN-Fassungen.
+  english = 'none',
+  englishOverrides = {},
+  languageSupport = null,
   contentRevisions = {},
   omitIds = [],
 } = {}) {
@@ -49,6 +53,29 @@ export function makeSyntheticLibrary({
     }
   })
 
+  questions.forEach((question) => {
+    const number = question.id.slice(-4)
+    const wantsEnglish = english === 'all' || (Array.isArray(english) && english.includes(question.id))
+
+    if (wantsEnglish) {
+      question.localized.en = {
+        question: `${questionLabel} EN ${number}?`,
+        optionText: {
+          a: `English ${number} A`,
+          b: `English ${number} B`,
+          c: `English ${number} C`,
+          d: `English ${number} D`,
+        },
+        explanation: `Synthetic explanation ${number}.`,
+        memoryAid: { type: 'mini_scenario', text: `Synthetic memory aid ${number}.` },
+      }
+    }
+
+    if (question.id in englishOverrides) {
+      question.localized.en = englishOverrides[question.id]
+    }
+  })
+
   const kept = questions.filter((question) => !omitIds.includes(question.id))
 
   return {
@@ -56,7 +83,7 @@ export function makeSyntheticLibrary({
     libraryId,
     libraryVersion,
     title: 'Synthetische Testbibliothek',
-    languageSupport: ['de'],
+    languageSupport: languageSupport ?? (english === 'none' ? ['de'] : ['de', 'en']),
     sourceSections: [30],
     questionCount: kept.length,
     activeQuestionIndexHash,

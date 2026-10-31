@@ -5,14 +5,20 @@
 // (steht je Frage in der Library, siehe parseLibrary); Dateinamen spielen keine Rolle.
 // Fortschritt bleibt an (libraryId, questionId) gebunden – hier wird nur gezählt, nie geschrieben.
 
+import { msg } from '../i18n/index.js'
 import { compareVersions } from './libraryUpdate.js'
 
 const SECTION_NUMBER_PATTERN = /^la(\d+)$/
 
-export function sectionLabel(sectionId) {
+// Übersetzbarer Deskriptor; `sectionNumber` ist die sprachneutrale Kennung (la08 → 8).
+export function sectionNumber(sectionId) {
   const match = SECTION_NUMBER_PATTERN.exec(sectionId)
 
-  return match ? `Lernabschnitt ${Number(match[1])}` : `Lernabschnitt ${sectionId}`
+  return match ? String(Number(match[1])) : sectionId
+}
+
+export function sectionLabel(sectionId) {
+  return msg('section.label', { id: sectionNumber(sectionId) })
 }
 
 function compareSectionIds(left, right) {
@@ -198,7 +204,7 @@ export function planLibraryBatch(entries, storedStates = []) {
       results.push(
         resultFor(entry, BATCH_STATUS.SKIPPED, {
           reason: BATCH_REASON.NOT_A_LIBRARY,
-          message: 'Diese Datei ist keine V2-Library (V1-Fragebanken lassen sich nur einzeln laden).',
+          message: msg('batch.notLibrary'),
         }),
       )
     }
@@ -234,7 +240,7 @@ export function planLibraryBatch(entries, storedStates = []) {
         results.push(
           resultFor(entry, BATCH_STATUS.REJECTED, {
             reason: BATCH_REASON.BATCH_CONFLICT,
-            message: `Widerspruch im Batch: ${group.length} Dateien mit derselben libraryId und gleicher Version, aber unterschiedlichem Fragenstand. Keine davon wird importiert.`,
+            message: msg('batch.conflict', { count: group.length }),
           }),
         ),
       )
@@ -256,8 +262,12 @@ export function planLibraryBatch(entries, storedStates = []) {
           resultFor(entry, BATCH_STATUS.SKIPPED, {
             reason: identical ? BATCH_REASON.IDENTICAL_DUPLICATE : BATCH_REASON.SUPERSEDED,
             message: identical
-              ? `Identische Library (${libraryId} ${entry.library.libraryVersion}) mehrfach im Batch; nur ${winner.fileName} wird verwendet.`
-              : `Ältere Version ${entry.library.libraryVersion} im selben Batch; verwendet wird ${winner.library.libraryVersion} aus ${winner.fileName}.`,
+              ? msg('batch.identicalDuplicate', { libraryId, version: entry.library.libraryVersion, winner: winner.fileName })
+              : msg('batch.superseded', {
+                  version: entry.library.libraryVersion,
+                  winnerVersion: winner.library.libraryVersion,
+                  winner: winner.fileName,
+                }),
           }),
         )
       })
@@ -279,9 +289,9 @@ export function planLibraryBatch(entries, storedStates = []) {
       resultFor(entry, BATCH_STATUS.REJECTED, {
         reason: BATCH_REASON.DUPLICATE_QUESTION_IDS,
         conflictingLibraryIds: [...clash.libraries].sort(),
-        message:
-          `${clash.ids.length} aktive Question-IDs sind auch in ${[...clash.libraries].sort().join(', ')} aktiv ` +
-          '(laut Contract nicht erlaubt). Die Library wird nicht importiert; nichts wurde überschrieben.',
+        message: msg('result.rejectedSuffix', {
+          message: msg('reject.duplicateIds', { count: clash.ids.length, libraries: [...clash.libraries].sort().join(', ') }),
+        }),
       }),
     )
   })

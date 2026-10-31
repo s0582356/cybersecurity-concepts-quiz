@@ -5,6 +5,7 @@ import { importLibraryBatch, confirmPendingUpdate } from '../src/storage/catalog
 import { buildOverview, buildSectionView, readCatalogData, readSectionData } from '../src/storage/sectionService.js'
 import { BATCH_REASON, BATCH_STATUS, groupBySection, planLibraryBatch, sectionLabel, summarizeSectionProgress } from '../src/domain/libraryCatalog.js'
 import { parseQuestionFile } from '../src/lib/library/parseLibrary.js'
+import { translate } from '../src/i18n/index.js'
 import { makeSyntheticLibrary } from './fixtures/syntheticLibrary.js'
 
 let dbName
@@ -83,10 +84,11 @@ describe('multi-file import', () => {
 
     const overview = buildOverview(await readCatalogData(store))
 
-    expect(overview.sections.map((section) => section.label)).toEqual(['Lernabschnitt 1', 'Lernabschnitt 2', 'Lernabschnitt 10'])
+    expect(overview.sections.map((section) => translate('de', section.label))).toEqual(['Lernabschnitt 1', 'Lernabschnitt 2', 'Lernabschnitt 10'])
     expect(overview.sections.map((section) => section.libraryCount)).toEqual([1, 2, 1])
     expect(overview.sections.map((section) => section.questionCount)).toEqual([3, 6, 3])
-    expect(sectionLabel('la08')).toBe('Lernabschnitt 8')
+    expect(translate('de', sectionLabel('la08'))).toBe('Lernabschnitt 8')
+    expect(translate('en', sectionLabel('la08'))).toBe('Learning section 8')
   })
 
   it('computes the batch summary from the actual files, not from constants', async () => {
@@ -258,7 +260,7 @@ describe('catalog persistence and partial imports', () => {
     const overview = buildOverview(await readCatalogData(second))
 
     expect(overview.sections).toMatchObject([
-      { label: 'Lernabschnitt 4', libraryCount: 2, questionCount: 6, answeredCount: 1, openCount: 5, percent: 17 },
+      { label: { i18n: 'section.label', params: { id: '4' } }, libraryCount: 2, questionCount: 6, answeredCount: 1, openCount: 5, percent: 17 },
     ])
     expect((await second.getLibraryContent('lib-r2')).questions).toHaveLength(3)
   })
@@ -275,8 +277,8 @@ describe('catalog persistence and partial imports', () => {
     const overview = buildOverview(await readCatalogData(store))
 
     expect(overview.sections).toMatchObject([
-      { label: 'Lernabschnitt 6', libraryCount: 2, questionCount: 5, answeredCount: 1 },
-      { label: 'Lernabschnitt 7', libraryCount: 1, questionCount: 3, answeredCount: 0 },
+      { label: { i18n: 'section.label', params: { id: '6' } }, libraryCount: 2, questionCount: 5, answeredCount: 1 },
+      { label: { i18n: 'section.label', params: { id: '7' } }, libraryCount: 1, questionCount: 3, answeredCount: 0 },
     ])
     expect(await store.getQuestionProgress('lib-part-1', 'sec-a06-0001')).toMatchObject({ attempts: 1, incorrectCount: 1 })
   })
@@ -322,7 +324,7 @@ describe('catalog persistence and partial imports', () => {
 
     expect(batch.results[0].status).toBe(BATCH_STATUS.KNOWN)
     expect(buildOverview(await readCatalogData(store))).toMatchObject({
-      sections: [{ label: 'Lernabschnitt 2', answeredCount: 1 }],
+      sections: [{ label: { i18n: 'section.label', params: { id: '2' } }, answeredCount: 1 }],
       uncatalogedLibraryIds: [],
     })
     expect(await store.getLibraryContent('lib-legacy')).not.toBeNull()
@@ -459,7 +461,7 @@ describe('section view', () => {
 
     const view = buildSectionView(await readSectionData(store, 'la05'))
 
-    expect(view.label).toBe('Lernabschnitt 5')
+    expect(translate('de', view.label)).toBe('Lernabschnitt 5')
     expect(view.questions.map((question) => question.id).sort()).toEqual(
       [...a.questions, ...b.questions].map((question) => question.id).sort(),
     )

@@ -1,5 +1,6 @@
 <script setup>
 import AnswerOption from './AnswerOption.vue'
+import { t } from '../i18n/index.js'
 
 const props = defineProps({
   question: {
@@ -46,6 +47,8 @@ function getAnswerClass(option) {
       <span>{{ question.difficulty }}</span>
     </div>
 
+    <p v-if="question.languageFallback" class="language-fallback-badge">{{ t('language.fallbackBadge') }}</p>
+
     <h2>{{ question.question }}</h2>
 
     <div class="answers">
@@ -61,15 +64,19 @@ function getAnswerClass(option) {
 
     <div v-if="isAnswered" class="feedback-box">
       <p v-if="selectedAnswer === question.correctAnswer" class="feedback-correct">
-        Richtig.
+        {{ t('quiz.correct') }}
       </p>
       <p v-else class="feedback-wrong">
-        Nicht ganz. Die richtige Antwort ist:
+        {{ t('quiz.wrong') }}
         <strong>{{ question.correctAnswer }}</strong>
       </p>
 
       <p class="explanation">
         {{ question.explanation }}
+      </p>
+
+      <p v-if="question.memoryAid?.text" class="memory-aid">
+        <strong>{{ t('quiz.memoryAid') }}:</strong> {{ question.memoryAid.text }}
       </p>
 
       <button
@@ -78,7 +85,7 @@ function getAnswerClass(option) {
         type="button"
         @click="emit('next-question')"
       >
-        Nächste Frage
+        {{ t('quiz.next') }}
       </button>
 
       <button
@@ -87,7 +94,7 @@ function getAnswerClass(option) {
         type="button"
         @click="emit('restart-quiz')"
       >
-        Auswertung anzeigen
+        {{ t('quiz.finish') }}
       </button>
     </div>
   </section>
