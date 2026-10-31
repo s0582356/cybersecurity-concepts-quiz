@@ -228,7 +228,7 @@ describe('case C: other hash', () => {
 describe('case D: new libraryId', () => {
   it('creates a separate state, progress and session scope', async () => {
     await seed()
-    const other = parseV2Library(makeSyntheticLibrary({ libraryId: 'other-update-library' })).library
+    const other = parseV2Library(makeSyntheticLibrary({ libraryId: 'other-update-library', idPrefix: 'sec-a31' })).library
     const result = await registerLibraryImport(store, other)
 
     expect(result.status).toBe(IMPORT_STATUS.NEW)

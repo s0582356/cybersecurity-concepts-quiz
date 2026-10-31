@@ -9,6 +9,8 @@ export function makeSyntheticLibrary({
   activeQuestionIndexHash = SYNTHETIC_HASH,
   count = 4,
   idPrefix = 'sec-a30',
+  learningSectionId = 'la99',
+  questionLabel = 'Synthetische Frage',
   contentRevisions = {},
   omitIds = [],
 } = {}) {
@@ -21,7 +23,7 @@ export function makeSyntheticLibrary({
       status: 'active',
       replacedBy: null,
       sourceTranscriptSection: 30,
-      learningSectionId: 'la99',
+      learningSectionId,
       contentMode: 'learning',
       topicId: index % 2 === 0 ? 'la99.alpha' : 'la99.beta',
       subtopicId: 'la99.alpha.one',
@@ -31,7 +33,7 @@ export function makeSyntheticLibrary({
       contentRevision: contentRevisions[`${idPrefix}-${number}`] ?? 1,
       localized: {
         de: {
-          question: `Synthetische Frage ${number}?`,
+          question: `${questionLabel} ${number}?`,
           optionText: {
             a: `Synthetisch ${number} A`,
             b: `Synthetisch ${number} B`,

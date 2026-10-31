@@ -20,6 +20,7 @@ const LIBRARY_ID_PATTERN = /^[a-z0-9-]{3,64}$/
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+$/
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/
 const QUESTION_ID_PATTERN = /^sec-a\d{2}-\d{4}$/
+const SECTION_ID_PATTERN = /^[a-z0-9-]{2,32}$/
 const OPTION_KEYS = ['a', 'b', 'c', 'd']
 
 export function parseV1Questions(data) {
@@ -143,6 +144,7 @@ export function parseV2Library(data) {
 
   const seenIds = new Set()
   const activeQuestions = []
+  const sectionIds = new Set()
 
   data.questions.forEach((question, index) => {
     const label = `V2-Frage ${index + 1}`
@@ -200,11 +202,24 @@ export function parseV2Library(data) {
       throw new LibraryParseError(`${label} (${question.id}): deutsche Erklärung fehlt.`)
     }
 
+    // Phase 2E: der Lernabschnitt steht je Frage (`learningSectionId`), nicht auf Library-Ebene.
+    sectionIds.add(question.learningSectionId)
     activeQuestions.push(toQuizQuestion(question, data.libraryId))
   })
 
   if (activeQuestions.length === 0) {
     throw new LibraryParseError('V2-Library: keine aktiven Fragen enthalten.')
+  }
+
+  if ([...sectionIds].some((id) => !isNonEmptyString(id) || !SECTION_ID_PATTERN.test(id))) {
+    throw new LibraryParseError('V2-Library: "learningSectionId" fehlt oder ist ungültig (Lernabschnitt nicht erkennbar).')
+  }
+
+  if (sectionIds.size !== 1) {
+    throw new LibraryParseError(
+      `V2-Library: die aktiven Fragen gehören zu ${sectionIds.size} verschiedenen Lernabschnitten (${[...sectionIds].join(', ')}); ` +
+        'eine Library muss genau einem Lernabschnitt zugeordnet sein.',
+    )
   }
 
   return {
@@ -215,6 +230,8 @@ export function parseV2Library(data) {
       activeQuestionIndexHash: data.activeQuestionIndexHash,
       title: typeof data.title === 'string' ? data.title : data.libraryId,
       sourceSections: data.sourceSections ?? [],
+      learningSectionId: [...sectionIds][0],
+      questionCount: activeQuestions.length,
       // Revisionsstand je aktiver Frage (Basis für Update-Klassifikation; nur IDs und Zahlen).
       questionRevisions: Object.fromEntries(
         activeQuestions.map((question) => [question.id, question.contentRevision]),

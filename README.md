@@ -88,15 +88,15 @@ src/data/public/sampleQuestions.json
 
 This file is intended for GitHub and deployment. It contains only original sample questions about general cybersecurity concepts.
 
-Private question banks can be loaded locally through the browser file picker as JSON files. They stay on the user's device during the session and are not uploaded, stored on a server, or included in the deployed static site.
+Private question banks can be loaded locally through the browser file picker as JSON files (one or several at once). They are read in the browser only and are not uploaded, stored on a server, or included in the deployed static site.
 
-For V2 libraries (JSON objects with a `libraryId`), the browser additionally stores learning progress locally in IndexedDB: only the library identity (ID, version, index hash) and per-question counters keyed by the stable question ID. Question texts, answer options, explanations, and the chosen answers are never stored. V1 question arrays are not persisted.
+For V2 libraries (JSON objects with a `libraryId`), the browser stores the imported library content locally in IndexedDB (object store `libraryContent`: the questions, answer options, and explanations) so that the app can show the library overview and continue learning after a page reload without importing the files again. This data stays in the browser on the user's device only: there is no server upload, no cloud sync, and no account. Learning progress is stored separately in IndexedDB: the library identity (ID, version, index hash), the learning section, and per-question counters keyed by the stable question ID; the chosen answers are not part of the lifetime progress. Imported libraries are grouped automatically by learning section. V1 question arrays are not persisted.
 
-V2 learning rounds can be resumed: the browser also stores the current round (the question order as stable question IDs, the current position, the round score and streak, and — for the question currently shown — the shown option order and chosen option key). After a reload, load the same library file again and choose "Lernrunde fortsetzen".
+V2 learning rounds can be resumed: the browser also stores the current round (the question order as stable question IDs, the current position, the round score and streak, and — for the question currently shown — the shown option order and chosen option key). After a page reload, open the learning section again (no file selection needed) and choose "Lernrunde fortsetzen". A full browser-process restart has not been tested yet.
 
 When a newer version of a library file is loaded, the app compares the question landscape: a new version with the same landscape is adopted silently; revised or added questions can be adopted after an explicit confirmation (progress is kept, nothing is copied or deleted); removed questions are only adopted if the local replacement list (retired-index.json, loaded through the same file picker; only IDs and policies are stored) explains every one of them — `inherit` carries the portable progress (attempts, answered, last result) over to the replacing question, `reset` carries nothing, answers/chosen options are never carried over. A deviating file is blocked.
 
-Private local study material should remain outside the public source code and must not be committed, pushed, deployed, or shown in screenshots.
+Private local study material should remain outside the public source code and must not be committed, pushed, deployed, or shown in screenshots. The private JSON files are never part of the public repository, and no real private questions are embedded in public fixtures or the build output.
 
 ## Learning Workflow
 
@@ -195,4 +195,4 @@ It does not include real exam questions, brain dumps, copied course materials, o
 
 It is not affiliated with any certification provider, training platform, course author, or exam preparation provider.
 
-Private question banks can be used locally through the file picker. These private files are not uploaded, stored, deployed, or included in the public repository.
+Private question banks can be used locally through the file picker. These private files are not uploaded to any server, not deployed, and not included in the public repository. Their content is kept only locally in the browser's IndexedDB (see "Public vs. Private Question Banks").

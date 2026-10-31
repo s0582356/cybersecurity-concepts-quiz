@@ -88,9 +88,11 @@ src/data/public/sampleQuestions.json
 
 Diese Datei ist für GitHub und Deployment vorgesehen. Sie enthält nur eigene Beispiel-Fragen zu allgemeinen Cybersecurity-Konzepten.
 
-Private Fragebanken können lokal über die Dateiauswahl des Browsers als JSON-Dateien geladen werden. Sie bleiben während der Sitzung auf dem Gerät der Nutzerin oder des Nutzers und werden nicht hochgeladen, nicht auf einem Server gespeichert und nicht in die deployte statische Website eingebunden.
+Private Fragebanken können lokal über die Dateiauswahl des Browsers als JSON-Dateien geladen werden (auch mehrere gleichzeitig). Sie werden nur im Browser gelesen und nicht hochgeladen, nicht auf einem Server gespeichert und nicht in die deployte statische Website eingebunden.
 
-Private lokale Lernmaterialien sollten außerhalb des öffentlichen Quellcodes bleiben und nicht committed, gepusht, deployed oder in Screenshots gezeigt werden.
+Bei V2-Bibliotheken (JSON-Objekte mit `libraryId`) speichert der Browser die importierten Inhalte (Fragen, Antwortoptionen, Erklärungen) lokal in IndexedDB (Object Store `libraryContent`). Dadurch zeigt die App die Bibliotheksübersicht nach einem Seiten-Reload an und kann ohne erneuten Dateiimport weiterlernen. Die Daten bleiben ausschließlich im Browser auf dem eigenen Gerät: kein Server-Upload, kein Cloud-Sync, kein Konto. Lernfortschritt (Bibliotheks-ID, Version, Index-Hash, Lernabschnitt, Zähler je stabiler Frage-ID) und Lernrunden (Fragenreihenfolge als IDs, aktuelle Position, Rundenstand) werden getrennt davon gespeichert. Die Bibliotheken werden automatisch nach Lernabschnitt gruppiert. V1-Fragenlisten werden nicht gespeichert. Nach einem Seiten-Reload genügt es, den Lernabschnitt erneut zu öffnen; ein vollständiger Neustart des Browser-Prozesses wurde noch nicht getestet.
+
+Private lokale Lernmaterialien sollten außerhalb des öffentlichen Quellcodes bleiben und nicht committed, gepusht, deployed oder in Screenshots gezeigt werden. Die privaten JSON-Dateien gehören nie ins öffentliche Repository; echte private Fragen sind weder in öffentlichen Fixtures noch im Build eingebettet.
 
 ## Lernworkflow
 
@@ -175,4 +177,4 @@ Sie enthält keine echten Prüfungsfragen, keine Brain Dumps, keine kopierten Ku
 
 Das Projekt steht in keiner Verbindung zu Zertifizierungsanbietern, Trainingsplattformen, Kursautoren oder Prüfungsanbietern.
 
-Private Fragebanken können lokal über die Dateiauswahl verwendet werden. Diese privaten Dateien werden nicht hochgeladen, nicht gespeichert, nicht deployed und nicht im öffentlichen Repository veröffentlicht.
+Private Fragebanken können lokal über die Dateiauswahl verwendet werden. Diese privaten Dateien werden nicht auf einen Server hochgeladen, nicht deployed und nicht im öffentlichen Repository veröffentlicht. Ihr Inhalt wird nur lokal im IndexedDB des Browsers gehalten (siehe „Öffentliche vs. private Fragebanken“).

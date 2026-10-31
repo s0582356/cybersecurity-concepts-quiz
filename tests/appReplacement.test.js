@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buttonByText,
   heading,
-  importJson,
+  importAndOpen,
   mountApp,
   reload,
   resetBrowserStorage,
@@ -15,7 +15,8 @@ import {
   withStore,
 } from './helpers/appHarness.js'
 import { makeSyntheticLibrary } from './fixtures/syntheticLibrary.js'
-import { applyAnswer, createSessionRecord } from '../src/domain/session.js'
+import { applyAnswer } from '../src/domain/session.js'
+import { createSectionSessionRecord } from '../src/domain/sectionSession.js'
 import { parseV2Library } from '../src/lib/library/parseLibrary.js'
 
 const A = 'app-repl-a'
@@ -51,7 +52,7 @@ async function importRegistry(container, data, fileName = 'retired-index.json') 
 // Beide Bibliotheken bekannt, Fortschritt auf der später entfernten Frage.
 async function prepare() {
   const first = mountApp()
-  await importJson(first.container, libA(), 'a.json')
+  await importAndOpen(first.container, libA(), 'a.json')
   const second = await reload(first, libB(), 'b.json')
 
   await withStore(async (store) => {
@@ -79,7 +80,7 @@ describe('replacement migration in the app', () => {
 
     await importRegistry(app.container, { 'sec-a30-0004': { replacedBy: 'sec-a31-0001', progressMigration: 'inherit' } })
 
-    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('learningGoalEquivalence'))
+    expect(app.container.querySelector('.library-message-error').textContent).toContain('learningGoalEquivalence')
     expect(await withStore((store) => store.getRetiredIndex())).toBeNull()
   })
 
@@ -104,7 +105,7 @@ describe('replacement migration in the app', () => {
     expect(await withStore((store) => store.getQuestionProgress(B, 'sec-a31-0001'))).toBeNull()
 
     buttonByText(next.container, 'Aktualisierung übernehmen').click()
-    await vi.waitFor(() => expect(next.container.querySelector('.question-bank-label').textContent).toContain('a2.json'))
+    await vi.waitFor(() => expect(next.container.querySelector('.import-report').textContent).toContain('Aktualisiert'))
     await settle()
 
     const target = await withStore((store) => store.getQuestionProgress(B, 'sec-a31-0001'))
@@ -116,7 +117,7 @@ describe('replacement migration in the app', () => {
     // Reload + erneuter Import: unverändert, kein weiteres Update.
     const again = await reload(next, aV2(), 'a2.json')
 
-    expect(again.container.querySelector('.library-message').textContent).toContain('Bekannte Bibliothek')
+    expect(again.container.querySelector('.library-message').textContent).toContain('Bereits aktuell')
     expect(await withStore((store) => store.getQuestionProgress(B, 'sec-a31-0001'))).toEqual(target)
     expect((await withStore((store) => store.listProgressForLibrary(B))).length).toBe(1)
   })
@@ -128,26 +129,30 @@ describe('replacement migration in the app', () => {
     const next = await reload(app, aV2(), 'a2.json')
 
     buttonByText(next.container, 'Aktualisierung übernehmen').click()
-    await vi.waitFor(() => expect(next.container.querySelector('.question-bank-label').textContent).toContain('a2.json'))
+    await vi.waitFor(() => expect(next.container.querySelector('.import-report').textContent).toContain('Aktualisiert'))
+    await settle()
 
     const afterB = await reload(next, libB(), 'b.json')
     const summary = afterB.container.querySelector('[aria-label="Gespeicherter Fortschritt"]').textContent
 
-    expect(summary).toContain('Beantwortet: 1 von 3')
+    // A (3 aktive) und B (3 aktive) bilden gemeinsam den Lernabschnitt.
+    expect(summary).toContain('Beantwortet: 1 von 6')
     expect(summary).toContain('Versuche gesamt: 2')
   })
 
   it('same-library reset: the resumed round shows streaks derived from the remaining credit', async () => {
     const first = mountApp()
 
-    await importJson(first.container, libA(), 'a.json')
+    await importAndOpen(first.container, libA(), 'a.json')
 
     // Runde 1 ✓, 2 ✓, 4 ✓ (später ersetzt) – Serie 3, Bestwert 3
-    const { library } = parseV2Library(libA())
-    let session = createSessionRecord({
+    const { library, questions: libraryQuestions } = parseV2Library(libA())
+    const byId = new Map(libraryQuestions.map((question) => [question.id, question]))
+    let session = createSectionSessionRecord({
       sessionId: 'streak-round',
-      library,
-      orderedQuestionIds: ['sec-a30-0001', 'sec-a30-0002', 'sec-a30-0004', 'sec-a30-0003'],
+      sectionId: library.learningSectionId,
+      libraries: [library],
+      orderedQuestions: ['sec-a30-0001', 'sec-a30-0002', 'sec-a30-0004', 'sec-a30-0003'].map((id) => byId.get(id)),
     })
 
     for (const questionId of ['sec-a30-0001', 'sec-a30-0002', 'sec-a30-0004']) {
@@ -163,7 +168,8 @@ describe('replacement migration in the app', () => {
     const second = await reload(first, updated, 'a2.json')
 
     buttonByText(second.container, 'Aktualisierung übernehmen').click()
-    await vi.waitFor(() => expect(buttonByText(second.container, 'Lernrunde fortsetzen')).toBeDefined())
+    await vi.waitFor(() => expect(second.container.querySelector('.import-report').textContent).toContain('Aktualisiert'))
+    await settle()
     await resume(second.container)
 
     expect(heading(second.container)).toBe('Synthetische Frage 0005?')

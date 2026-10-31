@@ -67,7 +67,7 @@ describe('storage initialization', () => {
 
     expect(await store.getStorageSchemaVersion()).toBe(1)
     expect(STORAGE_SCHEMA_VERSION).toBe(1)
-    expect(DB_VERSION).toBe(2)
+    expect(DB_VERSION).toBe(3)
   })
 
   it('rejects an unknown storageSchemaVersion in a controlled way', async () => {
@@ -115,6 +115,9 @@ describe('library import', () => {
       questionRevisions: library.questionRevisions,
       firstImportedAt: 1000,
       lastAccessedAt: 1000,
+      title: library.title,
+      learningSectionId: 'la99',
+      questionCount: 4,
     })
     expect(await store.listProgressForLibrary(library.libraryId)).toEqual([])
   })
@@ -130,7 +133,7 @@ describe('library import', () => {
 
   it('an unknown libraryId creates a separate library state', async () => {
     const first = parseV2Library(makeSyntheticLibrary({ libraryId: 'library-one' })).library
-    const second = parseV2Library(makeSyntheticLibrary({ libraryId: 'library-two' })).library
+    const second = parseV2Library(makeSyntheticLibrary({ libraryId: 'library-two', idPrefix: 'sec-a31' })).library
 
     await registerLibraryImport(store, first)
     await store.recordAnswer({ libraryId: 'library-one', questionId: 'sec-a30-0001', isCorrect: false })
@@ -197,6 +200,9 @@ describe('library import', () => {
       questionRevisions: original.questionRevisions,
       firstImportedAt: 1000,
       lastAccessedAt: 1000,
+      title: original.title,
+      learningSectionId: 'la99',
+      questionCount: 4,
     })
     expect(await store.listProgressForLibrary(original.libraryId)).toHaveLength(1)
   })

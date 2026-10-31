@@ -592,3 +592,103 @@ h1 {
   }
 }
 
+
+/* Phase 2E: Bibliotheksübersicht und Import-Ergebnis */
+.import-report {
+  width: min(100%, 760px);
+  margin: 0 auto 18px;
+}
+
+.import-summary {
+  margin: 0 0 12px;
+  text-align: center;
+  color: #e2e8f0;
+  font-weight: 700;
+}
+
+.import-results {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.import-results .library-message {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  margin: 0 0 8px;
+  text-align: left;
+}
+
+.import-status {
+  font-weight: 700;
+}
+
+.import-detail {
+  font-size: 0.92rem;
+}
+
+.import-results .start-button {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
+.section-overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 14px;
+  width: 100%;
+  margin: 0 auto 24px;
+}
+
+.section-card {
+  padding: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 20px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #cbd5e1;
+  line-height: 1.45;
+}
+
+.section-card-selected {
+  border-color: rgba(56, 189, 248, 0.7);
+}
+
+.section-card h3 {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+  color: #f8fafc;
+}
+
+.section-card p {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.section-progress {
+  height: 8px;
+  margin: 10px 0 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+}
+
+.section-progress span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(135deg, #86efac, #38bdf8);
+}
+
+.section-card .start-button {
+  margin-top: 12px;
+  padding: 10px 16px;
+}
+
+.section-note {
+  width: min(100%, 760px);
+  margin: 0 auto 14px;
+  color: #cbd5e1;
+  font-size: 0.92rem;
+  text-align: center;
+}

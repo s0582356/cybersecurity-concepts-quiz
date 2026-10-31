@@ -1,113 +1,28 @@
 // @vitest-environment jsdom
 import 'fake-indexeddb/auto'
-import { createApp, nextTick } from 'vue'
+import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import App from '../src/App.vue'
-import { createProgressStore } from '../src/storage/progressStore.js'
+import {
+  answerButtons,
+  answerCurrent,
+  buttonByText,
+  heading,
+  importAndOpen,
+  importJson,
+  mountApp,
+  openSection,
+  next,
+  optionTexts,
+  reload,
+  resume,
+  scoreText,
+  settle,
+  startQuiz,
+  unmountAll,
+  unmountApp,
+  withStore,
+} from './helpers/appHarness.js'
 import { makeSyntheticLibrary, V1_QUESTIONS } from './fixtures/syntheticLibrary.js'
-
-const DB_NAME = 'cybersecurity-concepts-quiz'
-let mounted = []
-
-function mountApp() {
-  const container = document.createElement('div')
-  document.body.appendChild(container)
-  const app = createApp(App)
-  app.mount(container)
-  const entry = { app, container }
-  mounted.push(entry)
-  return entry
-}
-
-function unmountApp(entry) {
-  entry.app.unmount()
-  entry.container.remove()
-  mounted = mounted.filter((item) => item !== entry)
-}
-
-async function settle(ms = 60) {
-  await new Promise((resolve) => setTimeout(resolve, ms))
-  await nextTick()
-}
-
-async function importJson(container, data, fileName = 'test.json') {
-  const input = container.querySelector('input[type="file"]')
-  const file = { name: fileName, text: async () => JSON.stringify(data) }
-
-  Object.defineProperty(input, 'files', { value: [file], configurable: true })
-  input.dispatchEvent(new Event('change'))
-  await vi.waitFor(() => {
-    const label = container.querySelector('.question-bank-label').textContent
-    expect(label.includes(fileName) || container.querySelector('.library-message-error')).toBeTruthy()
-  })
-  await settle()
-}
-
-function buttonByText(container, text) {
-  return [...container.querySelectorAll('button')].find((button) => button.textContent.trim() === text)
-}
-
-function answerButtons(container) {
-  return [...container.querySelectorAll('.answer-button')]
-}
-
-function optionTexts(container) {
-  return answerButtons(container).map((button) => button.textContent.trim())
-}
-
-function heading(container) {
-  return container.querySelector('.question-card h2')?.textContent ?? null
-}
-
-function scoreText(container) {
-  return container.querySelector('.score-card')?.textContent.replace(/\s+/g, ' ').trim()
-}
-
-async function startQuiz(container) {
-  buttonByText(container, 'Mit aktueller Fragebank starten').click()
-  await vi.waitFor(() => expect(heading(container)).not.toBeNull())
-}
-
-async function resume(container) {
-  buttonByText(container, 'Lernrunde fortsetzen').click()
-  await vi.waitFor(() => expect(heading(container)).not.toBeNull())
-}
-
-// Beantwortet die aktuelle Frage und gibt ihre Question-ID zurück.
-async function answerCurrent(container, library, { correct }) {
-  const source = library.questions.find((question) => question.localized.de.question === heading(container))
-  const expected = source.localized.de.optionText[source.correctOptionKey]
-  const button = answerButtons(container).find((candidate) => (candidate.textContent.trim() === expected) === correct)
-
-  button.click()
-  await nextTick()
-  return source.id
-}
-
-async function next(container) {
-  buttonByText(container, 'Nächste Frage').click()
-  await nextTick()
-}
-
-// Reload = alte App-Instanz weg, neue App-Instanz, Library-Datei wird erneut geladen.
-async function reload(entry, library, fileName = 'v2.json') {
-  await settle()
-  unmountApp(entry)
-  const fresh = mountApp()
-  await importJson(fresh.container, library, fileName)
-  return fresh
-}
-
-async function withStore(callback) {
-  const store = createProgressStore({ dbName: DB_NAME })
-  await store.initialize()
-
-  try {
-    return await callback(store)
-  } finally {
-    store.close()
-  }
-}
 
 beforeEach(() => {
   window.alert = vi.fn()
@@ -115,9 +30,7 @@ beforeEach(() => {
   globalThis.indexedDB = new (globalThis.indexedDB.constructor)()
 })
 
-afterEach(() => {
-  mounted.slice().forEach(unmountApp)
-})
+afterEach(unmountAll)
 
 describe('V1 regression', () => {
   it('imports a V1 bank, starts the quiz and runs the answer flow', async () => {
@@ -174,11 +87,11 @@ describe('V2 resume in the app', () => {
 
   it('starts a persisted session with a stored question order of stable IDs', async () => {
     const app = mountApp()
-    await importJson(app.container, library)
+    await importAndOpen(app.container, library)
     await startQuiz(app.container)
     await settle()
 
-    const session = await withStore((store) => store.getLatestSession('app-test-library'))
+    const session = await withStore((store) => store.getLatestSectionSession('la99'))
 
     expect([...session.orderedQuestionIds].sort()).toEqual(library.questions.map((question) => question.id))
     expect(session).toMatchObject({ currentIndex: 0, completed: false, sessionMode: 'learning' })
@@ -187,7 +100,7 @@ describe('V2 resume in the app', () => {
 
   it('case A: reload before answering shows the same unanswered question and option order', async () => {
     const first = mountApp()
-    await importJson(first.container, library)
+    await importAndOpen(first.container, library)
     await startQuiz(first.container)
     const shownHeading = heading(first.container)
     const shownOptions = optionTexts(first.container)
@@ -204,7 +117,7 @@ describe('V2 resume in the app', () => {
 
   it('case B: reload after an answer (before "Weiter") restores the answered question without double counting', async () => {
     const first = mountApp()
-    await importJson(first.container, library)
+    await importAndOpen(first.container, library)
     await startQuiz(first.container)
     const shownHeading = heading(first.container)
     const questionId = await answerCurrent(first.container, library, { correct: false })
@@ -227,7 +140,7 @@ describe('V2 resume in the app', () => {
 
     const { progress, session } = await withStore(async (store) => ({
       progress: await store.getQuestionProgress('app-test-library', questionId),
-      session: await store.getLatestSession('app-test-library'),
+      session: await store.getLatestSectionSession('la99'),
     }))
 
     expect(progress).toMatchObject({ attempts: 1, incorrectCount: 1 })
@@ -236,9 +149,9 @@ describe('V2 resume in the app', () => {
 
   it('case C: "Weiter" persists the next question; repeated reloads keep the order', async () => {
     let app = mountApp()
-    await importJson(app.container, library)
+    await importAndOpen(app.container, library)
     await startQuiz(app.container)
-    const order = (await (async () => { await settle(); return withStore((store) => store.getLatestSession('app-test-library')) })()).orderedQuestionIds
+    const order = (await (async () => { await settle(); return withStore((store) => store.getLatestSectionSession('la99')) })()).orderedQuestionIds
 
     await answerCurrent(app.container, library, { correct: true })
     await next(app.container)
@@ -253,14 +166,14 @@ describe('V2 resume in the app', () => {
       expect(app.container.querySelector('.feedback-box')).toBeNull()
     }
 
-    const session = await withStore((store) => store.getLatestSession('app-test-library'))
+    const session = await withStore((store) => store.getLatestSectionSession('la99'))
 
     expect(session).toMatchObject({ orderedQuestionIds: order, currentQuestionId: order[1], currentIndex: 1 })
   })
 
   it('keeps score, streak and categories across a reload and finishes without double counting', async () => {
     const first = mountApp()
-    await importJson(first.container, library)
+    await importAndOpen(first.container, library)
     await startQuiz(first.container)
     await answerCurrent(first.container, library, { correct: true })
     await next(first.container)
@@ -297,9 +210,9 @@ describe('V2 resume in the app', () => {
 
   it('marks a finished round completed, offers a new round and keeps lifetime progress', async () => {
     const first = mountApp()
-    await importJson(first.container, library)
+    await importAndOpen(first.container, library)
     await startQuiz(first.container)
-    const oldSession = await withStore((store) => store.getLatestSession('app-test-library'))
+    const oldSession = await withStore((store) => store.getLatestSectionSession('la99'))
 
     for (let index = 0; index < 4; index++) {
       await answerCurrent(first.container, library, { correct: index !== 1 })
@@ -328,7 +241,7 @@ describe('V2 resume in the app', () => {
       'Beantwortet: 4 von 4',
     )
 
-    const completed = await withStore((store) => store.getLatestSession('app-test-library'))
+    const completed = await withStore((store) => store.getLatestSectionSession('la99'))
 
     expect(completed).toMatchObject({ sessionId: oldSession.sessionId, completed: true, sessionCorrectCount: 3, sessionIncorrectCount: 1 })
 
@@ -336,7 +249,7 @@ describe('V2 resume in the app', () => {
     await vi.waitFor(() => expect(heading(second.container)).not.toBeNull())
     await settle()
 
-    const fresh = await withStore((store) => store.getLatestSession('app-test-library'))
+    const fresh = await withStore((store) => store.getLatestSectionSession('la99'))
     const lifetime = await withStore((store) => store.listProgressForLibrary('app-test-library'))
 
     expect(fresh.sessionId).not.toBe(oldSession.sessionId)
@@ -346,13 +259,13 @@ describe('V2 resume in the app', () => {
     expect(scoreText(second.container)).toContain('Score: 0')
   })
 
-  it('does not resume a session against a changed question landscape (hash) and keeps it stored', async () => {
+  it('a changed question landscape (hash) is not applied silently: stored questions and round stay unchanged', async () => {
     const first = mountApp()
-    await importJson(first.container, library)
+    await importAndOpen(first.container, library)
     await startQuiz(first.container)
     await answerCurrent(first.container, library, { correct: true })
     await settle()
-    const before = await withStore((store) => store.getLatestSession('app-test-library'))
+    const before = await withStore((store) => store.getLatestSectionSession('la99'))
     unmountApp(first)
 
     const changed = makeSyntheticLibrary({
@@ -364,40 +277,51 @@ describe('V2 resume in the app', () => {
     await importJson(second.container, changed, 'changed.json')
 
     expect(second.container.querySelector('.library-message-error').textContent).toContain('nicht geladen')
-    expect(buttonByText(second.container, 'Lernrunde fortsetzen')).toBeUndefined()
-    expect(await withStore((store) => store.getLatestSession('app-test-library'))).toEqual(before)
+    expect(await withStore((store) => store.getLatestSectionSession('la99'))).toEqual(before)
 
-    // Mit der ursprünglichen Datei lässt sich die Runde weiterhin fortsetzen.
+    // Die gespeicherten Fragen sind unverändert; die Runde lässt sich weiterhin fortsetzen.
     const third = await reload(second, library)
     await resume(third.container)
     expect(scoreText(third.container)).toContain('Score: 1')
   })
 
-  it('blocks resume with a controlled state if stored question IDs are missing in the library', async () => {
+  it('blocks resume with a controlled state if stored question IDs are no longer active in the catalog', async () => {
     const first = mountApp()
-    await importJson(first.container, library)
+    await importAndOpen(first.container, library)
     await startQuiz(first.container)
     await settle()
-    const before = await withStore((store) => store.getLatestSession('app-test-library'))
+    const before = await withStore((store) => store.getLatestSectionSession('la99'))
     unmountApp(first)
 
-    // Gleiche Metadaten/Hash, aber eine Frage weniger: Landschaft passt nicht zur gespeicherten Runde.
-    const reduced = makeSyntheticLibrary({ libraryId: 'app-test-library', count: 3 })
-    const second = mountApp()
-    await importJson(second.container, reduced, 'reduced.json')
+    // Eine gespeicherte Rundenfrage, die der Katalog nicht (mehr) als aktiv kennt.
+    const stale = {
+      ...before,
+      orderedQuestionIds: [...before.orderedQuestionIds, 'sec-a30-0099'],
+      questionLibraries: { ...before.questionLibraries, 'sec-a30-0099': 'app-test-library' },
+      questionRevisions: { ...before.questionRevisions, 'sec-a30-0099': 1 },
+    }
 
+    await withStore((store) => store.startNewSession(stale))
+
+    const second = mountApp()
+    await openSection(second.container)
     const panel = second.container.querySelector('[aria-label="Lernrunde"]')
 
     expect(panel.textContent).toContain('Lernrunde kann nicht fortgesetzt werden')
     expect(panel.textContent).toContain('1 fehlen')
     expect(buttonByText(second.container, 'Lernrunde fortsetzen')).toBeUndefined()
-    expect(await withStore((store) => store.getLatestSession('app-test-library'))).toEqual(before)
+    expect(await withStore((store) => store.getLatestSectionSession('la99'))).toEqual(stale)
   })
 
-  it('keeps sessions of different libraries separate', async () => {
-    const other = makeSyntheticLibrary({ libraryId: 'other-test-library', count: 4 })
+  it('keeps sessions of different learning sections separate', async () => {
+    const other = makeSyntheticLibrary({
+      libraryId: 'other-test-library',
+      count: 4,
+      idPrefix: 'sec-a31',
+      learningSectionId: 'la98',
+    })
     const first = mountApp()
-    await importJson(first.container, library)
+    await importAndOpen(first.container, library)
     await startQuiz(first.container)
     await settle()
 
@@ -408,18 +332,18 @@ describe('V2 resume in the app', () => {
     await settle()
 
     const sessions = await withStore(async (store) => ({
-      one: await store.getLatestSession('app-test-library'),
-      two: await store.getLatestSession('other-test-library'),
+      one: await store.getLatestSectionSession('la99'),
+      two: await store.getLatestSectionSession('la98'),
     }))
 
     expect(sessions.one.sessionId).not.toBe(sessions.two.sessionId)
-    expect(sessions.one.libraryId).toBe('app-test-library')
-    expect(sessions.two.libraryId).toBe('other-test-library')
+    expect(sessions.one.sectionId).toBe('la99')
+    expect(sessions.two.sectionId).toBe('la98')
   })
 
   it('keeps lifetime progress separate from the round: a discarded round does not erase it', async () => {
     const first = mountApp()
-    await importJson(first.container, library)
+    await importAndOpen(first.container, library)
     await startQuiz(first.container)
     const questionId = await answerCurrent(first.container, library, { correct: true })
     await settle()
@@ -431,7 +355,7 @@ describe('V2 resume in the app', () => {
 
     const { progress, session } = await withStore(async (store) => ({
       progress: await store.getQuestionProgress('app-test-library', questionId),
-      session: await store.getLatestSession('app-test-library'),
+      session: await store.getLatestSectionSession('la99'),
     }))
 
     expect(progress).toMatchObject({ attempts: 1, correctCount: 1 })
@@ -441,7 +365,7 @@ describe('V2 resume in the app', () => {
 
   it('persists lifetime answers across a reload and shows them on the start screen', async () => {
     const first = mountApp()
-    await importJson(first.container, library)
+    await importAndOpen(first.container, library)
     await startQuiz(first.container)
     await answerCurrent(first.container, library, { correct: true })
     await next(first.container)
@@ -451,7 +375,7 @@ describe('V2 resume in the app', () => {
     const second = await reload(first, library)
     const summary = second.container.querySelector('[aria-label="Gespeicherter Fortschritt"]')
 
-    expect(second.container.querySelector('.library-message').textContent).toContain('Bekannte Bibliothek')
+    expect(second.container.querySelector('.library-message').textContent).toContain('Bereits aktuell')
     expect(summary.textContent).toContain('Beantwortet: 2 von 4')
     expect(summary.textContent).toContain('zuletzt richtig: 1')
     expect(summary.textContent).toContain('zuletzt falsch: 1')
@@ -464,7 +388,7 @@ describe('V2 resume in the app', () => {
 
     try {
       const { container } = mountApp()
-      await importJson(container, library)
+      await importAndOpen(container, library)
 
       expect(container.querySelector('.library-message-warning').textContent).toContain(
         'Fortschritt wird nicht gespeichert',

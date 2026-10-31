@@ -366,7 +366,7 @@ function invalid(reason, extra = {}) {
   return { status: SESSION_STATUS.RESUME_REQUIRES_MIGRATION, reason, ...extra }
 }
 
-function hasValidShape(session) {
+export function hasValidShape(session) {
   const ordered = session.orderedQuestionIds
   const orderedSet = new Set(ordered)
 

@@ -5,8 +5,14 @@
 // - STORAGE_SCHEMA_VERSION Version des Datenmodells in den Stores (meta-Eintrag)
 // - libraryVersion         Version einer Fragebibliothek (steht in der Library-Datei)
 //
-// Gespeichert werden nur IDs, Zähler, Zeitstempel und Rundenzustand – nie Fragen,
-// Optionstexte oder Erklärungen.
+// Fortschritt/Rundenzustand: nur IDs, Zähler, Zeitstempel. Die Fragen selbst stehen ausschließlich
+// im Store `libraryContent` (Phase 2E, lokal im Browser, nie hochgeladen).
+//
+// Phase 2E: neuer Object Store `libraryContent` (additiv): die für die Lernabschnitts-Ansicht
+// nötigen Fragen werden lokal im Browser abgelegt, damit nach einem Reload keine Datei mehr gewählt
+// werden muss. DB_VERSION steigt auf 3; das Datenmodell der bestehenden Stores wird nur um optionale
+// Felder erweitert (Library-State: title, learningSectionId, questionCount) – STORAGE_SCHEMA_VERSION
+// bleibt 1. Der Library-Katalog ist aus dem Library-State abgeleitet und hat keinen eigenen Store.
 //
 // Phase 2B: neuer Object Store `sessions` (additiv). DB_VERSION steigt auf 2, weil nur
 // dadurch der Store angelegt wird; das Datenmodell der bestehenden Stores bleibt
@@ -20,15 +26,22 @@ import {
   migrateSessionToLibrary,
 } from '../domain/session.js'
 import { applyReplacementToProgress } from '../domain/replacementMigration.js'
+import {
+  isSectionSession,
+  migrateSectionSessionReplacements,
+  migrateSectionSessionToLibrary,
+  sectionScopeKey,
+} from '../domain/sectionSession.js'
 
 export const DB_NAME = 'cybersecurity-concepts-quiz'
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 export const STORAGE_SCHEMA_VERSION = 1
 
 const STORE_META = 'meta'
 const STORE_LIBRARIES = 'libraries'
 const STORE_PROGRESS = 'progress'
 const STORE_SESSIONS = 'sessions'
+const STORE_CONTENT = 'libraryContent'
 const INDEX_BY_LIBRARY = 'byLibrary'
 const META_SCHEMA_KEY = 'storageSchemaVersion'
 const META_RETIRED_INDEX_KEY = 'retiredIndex'
@@ -86,6 +99,10 @@ function upgradeDatabase(database) {
   if (!database.objectStoreNames.contains(STORE_SESSIONS)) {
     const sessions = database.createObjectStore(STORE_SESSIONS, { keyPath: 'sessionId' })
     sessions.createIndex(INDEX_BY_LIBRARY, 'libraryId')
+  }
+
+  if (!database.objectStoreNames.contains(STORE_CONTENT)) {
+    database.createObjectStore(STORE_CONTENT, { keyPath: 'libraryId' })
   }
 }
 
@@ -194,13 +211,8 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     return record ?? null
   }
 
-  async function upsertLibraryState(state) {
-    requireString(state?.libraryId, 'libraryId')
-    requireString(state.libraryVersion, 'libraryVersion')
-    requireString(state.activeQuestionIndexHash, 'activeQuestionIndexHash')
-
-    const transaction = db().transaction(STORE_LIBRARIES, 'readwrite')
-    transaction.objectStore(STORE_LIBRARIES).put({
+  function libraryStateRecord(state) {
+    return {
       libraryId: state.libraryId,
       libraryVersion: state.libraryVersion,
       activeQuestionIndexHash: state.activeQuestionIndexHash,
@@ -210,10 +222,47 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       // plain copy: IndexedDB kann keine Vue-Proxys klonen
       ...(state.questionRevisions && { questionRevisions: { ...state.questionRevisions } }),
       ...(state.updatedAt != null && { updatedAt: state.updatedAt }),
-    })
+      // additiv (Phase 2E): Katalog-Metadaten
+      ...(state.title != null && { title: state.title }),
+      ...(state.learningSectionId != null && { learningSectionId: state.learningSectionId }),
+      ...(state.questionCount != null && { questionCount: state.questionCount }),
+    }
+  }
+
+  function contentRecord(library, questions) {
+    return {
+      libraryId: library.libraryId,
+      libraryVersion: library.libraryVersion,
+      activeQuestionIndexHash: library.activeQuestionIndexHash,
+      // plain copy: IndexedDB kann keine Vue-Proxys klonen
+      questions: JSON.parse(JSON.stringify(questions)),
+    }
+  }
+
+  // Optional `questions`: Library-State und Fragen werden gemeinsam (atomar) geschrieben.
+  async function upsertLibraryState(state, { questions = null } = {}) {
+    requireString(state?.libraryId, 'libraryId')
+    requireString(state.libraryVersion, 'libraryVersion')
+    requireString(state.activeQuestionIndexHash, 'activeQuestionIndexHash')
+
+    const transaction = db().transaction(questions ? [STORE_LIBRARIES, STORE_CONTENT] : STORE_LIBRARIES, 'readwrite')
+    transaction.objectStore(STORE_LIBRARIES).put(libraryStateRecord(state))
+
+    if (questions) {
+      transaction.objectStore(STORE_CONTENT).put(contentRecord(state, questions))
+    }
+
     await transactionDone(transaction)
 
     return state
+  }
+
+  async function getLibraryContent(libraryId) {
+    requireString(libraryId, 'libraryId')
+
+    const record = await requestResult(db().transaction(STORE_CONTENT).objectStore(STORE_CONTENT).get(libraryId))
+
+    return record ?? null
   }
 
   async function getQuestionProgress(libraryId, questionId) {
@@ -260,6 +309,10 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
         .index(INDEX_BY_LIBRARY)
         .getAll(libraryId),
     )
+  }
+
+  async function listAllProgress() {
+    return requestResult(db().transaction(STORE_PROGRESS).objectStore(STORE_PROGRESS).getAll())
   }
 
   // Antwort-Ereignis: lesen, zählen und schreiben in einer einzigen Transaktion.
@@ -329,6 +382,20 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     return session
   }
 
+  // --- Abschnitts-Sessions (Phase 2E): höchstens eine Runde je Lernabschnitt (Scope-Key `section:<id>`) ---
+
+  function getLatestSectionSession(sectionId) {
+    requireString(sectionId, 'sectionId')
+
+    return getLatestSession(sectionScopeKey(sectionId))
+  }
+
+  async function listSectionSessions() {
+    const sessions = await requestResult(db().transaction(STORE_SESSIONS).objectStore(STORE_SESSIONS).getAll())
+
+    return sessions.filter(isSectionSession)
+  }
+
   async function updateSession(sessionId, transform) {
     requireString(sessionId, 'sessionId')
 
@@ -386,7 +453,11 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       requestResult(progressStore.get([libraryId, questionId])),
     ])
 
-    const result = session?.libraryId === libraryId
+    // Library-Runde: gleiche Library. Abschnitts-Runde: die Frage muss laut Runde zu dieser Library gehören.
+    const belongsToSession = isSectionSession(session)
+      ? session.questionLibraries?.[questionId] === libraryId
+      : session?.libraryId === libraryId
+    const result = belongsToSession
       ? applyAnswer(session, { questionId, isCorrect, selectedOptionKey, optionOrder })
       : { applied: false, reason: 'noSession' }
 
@@ -500,11 +571,12 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     previousHash,
     revisedQuestionIds = [],
     replacements = [],
+    questions = null,
     now = Date.now(),
   }) {
     requireString(library?.libraryId, 'libraryId')
 
-    const transaction = db().transaction([STORE_LIBRARIES, STORE_SESSIONS, STORE_PROGRESS], 'readwrite')
+    const transaction = db().transaction([STORE_LIBRARIES, STORE_SESSIONS, STORE_PROGRESS, STORE_CONTENT], 'readwrite')
 
     try {
       const libraryStore = transaction.objectStore(STORE_LIBRARIES)
@@ -541,11 +613,41 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
         questionRevisions: { ...library.questionRevisions },
         lastAccessedAt: now,
         updatedAt: now,
+        ...(library.title != null && { title: library.title }),
+        ...(library.learningSectionId != null && { learningSectionId: library.learningSectionId }),
+        ...(library.questionCount != null && { questionCount: library.questionCount }),
       })
 
       if (migration.migrated) {
         sessionStore.put(migration.session)
       }
+
+      // Phase 2E: Fragen des neuen Stands und laufende Abschnitts-Runden, die Fragen dieser Library enthalten.
+      if (questions) {
+        transaction.objectStore(STORE_CONTENT).put(contentRecord(library, questions))
+      }
+
+      const sectionId = library.learningSectionId ?? known.learningSectionId
+      const sectionSessions = (await requestResult(sessionStore.getAll())).filter(
+        (candidate) => isSectionSession(candidate) && candidate.sectionId === sectionId,
+      )
+      const sectionLibraries = [
+        ...(await requestResult(libraryStore.getAll())).filter(
+          (state) => state.libraryId !== library.libraryId && state.learningSectionId === sectionId && state.questionRevisions,
+        ),
+        library,
+      ]
+
+      sectionSessions.forEach((sectionSession) => {
+        const sectionMigration =
+          replacements.length > 0
+            ? migrateSectionSessionReplacements(sectionSession, sectionLibraries, replacements, revisedQuestionIds)
+            : migrateSectionSessionToLibrary(sectionSession, library, revisedQuestionIds)
+
+        if (sectionMigration.migrated) {
+          sessionStore.put(sectionMigration.session)
+        }
+      })
 
       await transactionDone(transaction)
 
@@ -571,6 +673,10 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     listProgressForLibrary,
     recordAnswer,
     getLatestSession,
+    getLibraryContent,
+    listAllProgress,
+    getLatestSectionSession,
+    listSectionSessions,
     startNewSession,
     markSessionResumed,
     advanceSessionTo,

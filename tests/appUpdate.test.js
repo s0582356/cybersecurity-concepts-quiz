@@ -6,7 +6,7 @@ import {
   answerCurrent,
   buttonByText,
   heading,
-  importJson,
+  importAndOpen,
   mountApp,
   next,
   reload,
@@ -34,7 +34,7 @@ function library(options = {}) {
 
 async function roundWithTwoAnswers(source = library()) {
   const app = mountApp()
-  await importJson(app.container, source)
+  await importAndOpen(app.container, source)
   await startQuiz(app.container)
   const first = await answerCurrent(app.container, source, { correct: true })
   await next(app.container)
@@ -48,7 +48,7 @@ describe('library update in the app', () => {
   it('case B: new PATCH version with the same hash keeps progress and the exact round', async () => {
     const original = library()
     const { app } = await roundWithTwoAnswers(original)
-    const before = await withStore((store) => store.getLatestSession(LIBRARY_ID))
+    const before = await withStore((store) => store.getLatestSectionSession("la99"))
     const secondHeading = heading(app.container)
 
     const patched = library({ libraryVersion: '1.0.1' })
@@ -62,7 +62,7 @@ describe('library update in the app', () => {
 
     const { state, session } = await withStore(async (store) => ({
       state: await store.getLibraryState(LIBRARY_ID),
-      session: await store.getLatestSession(LIBRARY_ID),
+      session: await store.getLatestSectionSession("la99"),
     }))
 
     expect(state.libraryVersion).toBe('1.0.1')
@@ -74,7 +74,7 @@ describe('library update in the app', () => {
     const { app } = await roundWithTwoAnswers()
     const before = await withStore(async (store) => ({
       state: await store.getLibraryState(LIBRARY_ID),
-      session: await store.getLatestSession(LIBRARY_ID),
+      session: await store.getLatestSectionSession("la99"),
       progress: await store.listProgressForLibrary(LIBRARY_ID),
     }))
 
@@ -87,12 +87,12 @@ describe('library update in the app', () => {
     expect(message).toContain('Fortschrittsmigration')
     expect(message).not.toContain('sha256')
     expect(buttonByText(second.container, 'Aktualisierung übernehmen')).toBeUndefined()
-    expect(buttonByText(second.container, 'Lernrunde fortsetzen')).toBeUndefined()
-    expect(second.container.querySelector('.question-bank-label').textContent).not.toContain('removed.json')
+    // Gespeicherte Fragen bleiben unverändert: die laufende Runde ist weiterhin fortsetzbar.
+    expect(buttonByText(second.container, 'Lernrunde fortsetzen')).toBeDefined()
 
     const after = await withStore(async (store) => ({
       state: await store.getLibraryState(LIBRARY_ID),
-      session: await store.getLatestSession(LIBRARY_ID),
+      session: await store.getLatestSectionSession("la99"),
       progress: await store.listProgressForLibrary(LIBRARY_ID),
     }))
 
@@ -109,7 +109,7 @@ describe('library update in the app', () => {
 
   it('revised questions: the update is only applied after confirmation, progress and round stay', async () => {
     const { app } = await roundWithTwoAnswers()
-    const orderBefore = (await withStore((store) => store.getLatestSession(LIBRARY_ID))).orderedQuestionIds
+    const orderBefore = (await withStore((store) => store.getLatestSectionSession("la99"))).orderedQuestionIds
     const currentHeading = heading(app.container)
     const progressBefore = await withStore((store) => store.listProgressForLibrary(LIBRARY_ID))
 
@@ -123,11 +123,10 @@ describe('library update in the app', () => {
     const second = await reload(app, updated, 'updated.json')
 
     expect(second.container.querySelector('.library-message-error').textContent).toContain('1 Fragen wurden überarbeitet')
-    expect(second.container.querySelector('.question-bank-label').textContent).not.toContain('updated.json')
     expect(await withStore((store) => store.getLibraryState(LIBRARY_ID))).toMatchObject({ libraryVersion: '1.0.0' })
 
     buttonByText(second.container, 'Aktualisierung übernehmen').click()
-    await vi.waitFor(() => expect(second.container.querySelector('.question-bank-label').textContent).toContain('updated.json'))
+    await vi.waitFor(() => expect(second.container.querySelector('.import-report').textContent).toContain('Aktualisiert'))
     await settle()
 
     expect(second.container.querySelector('.library-message').textContent).toContain('Version 1.1.0')
@@ -139,7 +138,7 @@ describe('library update in the app', () => {
 
     const after = await withStore(async (store) => ({
       state: await store.getLibraryState(LIBRARY_ID),
-      session: await store.getLatestSession(LIBRARY_ID),
+      session: await store.getLatestSectionSession("la99"),
       progress: await store.listProgressForLibrary(LIBRARY_ID),
     }))
 
@@ -151,7 +150,7 @@ describe('library update in the app', () => {
   it('revised current question: the old chosen option is not shown as current response', async () => {
     const source = library()
     const app = mountApp()
-    await importJson(app.container, source)
+    await importAndOpen(app.container, source)
     await startQuiz(app.container)
     const answeredId = await answerCurrent(app.container, source, { correct: false })
     await settle()
@@ -164,7 +163,8 @@ describe('library update in the app', () => {
     const second = await reload(app, updated, 'updated.json')
 
     buttonByText(second.container, 'Aktualisierung übernehmen').click()
-    await vi.waitFor(() => expect(buttonByText(second.container, 'Lernrunde fortsetzen')).toBeDefined())
+    await vi.waitFor(() => expect(second.container.querySelector('.import-report').textContent).toContain('Aktualisiert'))
+    await settle()
     await resume(second.container)
 
     // Antwort bleibt als beantwortet (kein Doppelzählen), aber die frühere Auswahl wird nicht markiert.
@@ -173,30 +173,36 @@ describe('library update in the app', () => {
     expect(answerButtons(second.container).every((button) => button.disabled)).toBe(true)
     expect(scoreText(second.container)).toContain('Score: 0')
 
-    const session = await withStore((store) => store.getLatestSession(LIBRARY_ID))
+    const session = await withStore((store) => store.getLatestSectionSession("la99"))
 
     expect(session.currentQuestionState).toMatchObject({ questionId: answeredId, selectedOptionKey: null, optionOrder: null })
     expect(session.answeredQuestionIds).toEqual([answeredId])
   })
 
-  it('added questions: after confirmation the old round stays blocked and no progress is invented', async () => {
+  it('added questions: after confirmation the running round stays as it is, new questions join the next round', async () => {
     const { app } = await roundWithTwoAnswers()
+    const before = await withStore((store) => store.getLatestSectionSession('la99'))
     const updated = library({ libraryVersion: '1.1.0', activeQuestionIndexHash: HASH_2, count: 5 })
     const second = await reload(app, updated, 'bigger.json')
 
     expect(second.container.querySelector('.library-message-error').textContent).toContain('1 Fragen sind neu')
     buttonByText(second.container, 'Aktualisierung übernehmen').click()
-    await vi.waitFor(() => expect(second.container.querySelector('[aria-label="Lernrunde"]')).not.toBeNull())
+    await vi.waitFor(() => expect(second.container.querySelector('.import-report').textContent).toContain('Aktualisiert'))
+    await settle()
 
     const panel = second.container.querySelector('[aria-label="Lernrunde"]')
 
-    expect(panel.textContent).toContain('Lernrunde kann nicht fortgesetzt werden')
-    expect(buttonByText(second.container, 'Lernrunde fortsetzen')).toBeUndefined()
+    // Die laufende Runde bleibt deterministisch; die neue Frage kommt erst in der nächsten Runde dazu.
+    expect(panel.textContent).toContain('Lernrunde läuft')
+    expect(panel.textContent).toContain('1 neue Fragen im Lernabschnitt kommen erst ab der nächsten Runde dazu')
+    expect((await withStore((store) => store.getLatestSectionSession('la99'))).orderedQuestionIds).toEqual(before.orderedQuestionIds)
     expect(await withStore((store) => store.listProgressForLibrary(LIBRARY_ID))).toHaveLength(2)
 
-    // Bewusster Neustart ist möglich; Lebenszeit-Fortschritt bleibt.
-    buttonByText(second.container, 'Runde verwerfen und neu starten').click()
+    // Bewusster Neustart: die neue Runde enthält alle 5 Fragen; Lebenszeit-Fortschritt bleibt.
+    buttonByText(second.container, 'Aktuelle Runde verwerfen und neu starten').click()
     await vi.waitFor(() => expect(heading(second.container)).not.toBeNull())
+    await settle()
+    expect((await withStore((store) => store.getLatestSectionSession('la99'))).orderedQuestionIds).toHaveLength(5)
     expect(await withStore((store) => store.listProgressForLibrary(LIBRARY_ID))).toHaveLength(2)
   })
 
@@ -211,7 +217,7 @@ describe('library update in the app', () => {
 
     const counts = await withStore(async (store) => ({
       progress: (await store.listProgressForLibrary(LIBRARY_ID)).length,
-      session: (await store.getLatestSession(LIBRARY_ID)).answeredQuestionIds.length,
+      session: (await store.getLatestSectionSession("la99")).answeredQuestionIds.length,
     }))
 
     expect(counts).toEqual({ progress: 2, session: 2 })

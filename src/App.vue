@@ -1,26 +1,24 @@
 <script setup>
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import QuizCard from './components/QuizCard.vue'
 import ScoreBox from './components/ScoreBox.vue'
 import PrivateQuestionImporter from './components/PrivateQuestionImporter.vue'
+import ImportReport from './components/ImportReport.vue'
+import SectionOverview from './components/SectionOverview.vue'
 import sampleQuestions from './data/public/sampleQuestions.json'
-import { summarizeLibraryProgress } from './domain/progressSummary.js'
+import { BATCH_STATUS, planLibraryBatch, summarizeBatch } from './domain/libraryCatalog.js'
 import {
   SESSION_STATUS,
   applyOptionOrder,
-  createSessionRecord,
   evaluateSession,
   isValidOptionOrder,
   optionOrderOf,
   shuffled,
 } from './domain/session.js'
-import { createProgressStore } from './storage/progressStore.js'
-import {
-  CHANGE_KIND,
-  IMPORT_STATUS,
-  applyLibraryUpdate,
-  registerLibraryImport,
-} from './storage/libraryImport.js'
+import { createSectionSessionRecord } from './domain/sectionSession.js'
+import { DB_NAME, createProgressStore } from './storage/progressStore.js'
+import { confirmPendingUpdate, importLibraryBatch } from './storage/catalogImport.js'
+import { buildOverview, buildSectionView, readCatalogData, readSectionData } from './storage/sectionService.js'
 
 const questions = ref(sampleQuestions)
 const questionBankName = ref('Öffentliche Beispiel-Fragen')
@@ -40,20 +38,28 @@ const answeredQuestions = ref([])
 // V2-Persistenz (Phase 2A): Fortschritt je (libraryId, question.id) in IndexedDB.
 // V1-Banken bleiben ohne Persistenz.
 const progressStore = createProgressStore()
-const activeLibrary = ref(null)
+// Phase 2E: Katalog (Lernabschnitte) und der aktuell geöffnete Lernabschnitt.
+const catalog = ref({ sections: [], uncatalogedLibraryIds: [] })
+const activeSection = ref(null)
+const importReport = ref(null)
 const importMessage = ref(null)
 const persistenceWarning = ref('')
 const librarySummary = ref(null)
 // Phase 2B: Resume-Zustand der V2-Lernrunde (getrennt vom dauerhaften Question Progress).
 const sessionInfo = ref(null)
-// Phase 2C: erkanntes Library-Update, das noch nicht geladen wurde (wartet auf Entscheidung/bleibt blockiert).
-const pendingUpdate = ref(null)
 // Phase 2D: Ersetzungs-Index (nur IDs und Policies; wird lokal geladen, nie im Repo mitgeliefert).
 const retiredIndex = ref(null)
 const activeSessionId = ref(null)
 let storageReady = null
+let storageError = ''
 let pendingWrites = Promise.resolve()
+// Phase 2E: erkannte, noch nicht bestätigte Updates (mit Fragen) – bewusst nicht reaktiv.
+let pendingEntries = new Map()
+// Ohne verfügbaren Speicher: flüchtiger Katalog nur für diese Sitzung.
+let memoryEntries = new Map()
+let catalogToken = 0
 
+const hasCatalog = computed(() => catalog.value.sections.length > 0)
 const totalQuestions = computed(() => questions.value.length)
 const wrongAnswerCount = computed(() => totalQuestions.value - score.value)
 const scorePercentage = computed(() => {
@@ -199,7 +205,7 @@ function resetQuizProgress({ clearIncorrectAnswers = true } = {}) {
 }
 
 function startQuiz() {
-  if (activeLibrary.value) {
+  if (activeSection.value) {
     return startLearningSession()
   }
 
@@ -220,11 +226,13 @@ async function startLearningSession() {
   activeSessionId.value = null
   await pendingWrites
 
-  if (await storageReady) {
+  // Eine Runde gehört zum ganzen Lernabschnitt: Fragen aller zugehörigen Libraries, einmal gemischt.
+  if (activeSection.value && !activeSection.value.ephemeral && (await storageReady)) {
     try {
-      const session = createSessionRecord({
-        library: activeLibrary.value,
-        orderedQuestionIds: orderedQuestions.map((question) => question.id),
+      const session = createSectionSessionRecord({
+        sectionId: activeSection.value.sectionId,
+        libraries: activeSection.value.libraries,
+        orderedQuestions,
         optionOrder: optionOrderOf(orderedQuestions[0]),
       })
 
@@ -381,7 +389,7 @@ function finishQuiz() {
 }
 
 function restartWithCurrentQuestionBank() {
-  if (activeLibrary.value) {
+  if (activeSection.value) {
     return startLearningSession()
   }
 
@@ -408,8 +416,8 @@ function showQuestionBankSelection() {
   isQuizStarted.value = false
   activeSessionId.value = null
   resetQuizProgress()
-  refreshLibrarySummary()
-  refreshSessionInfo()
+  refreshSection()
+  refreshCatalog()
 }
 
 function ensureStorage() {
@@ -422,6 +430,7 @@ function ensureStorage() {
         return true
       })
       .catch((error) => {
+        storageError = error.message
         persistenceWarning.value = `Fortschritt wird nicht gespeichert: ${error.message}`
         return false
       })
@@ -444,7 +453,7 @@ function queueWrite(task, failureMessage) {
 }
 
 function persistAnswer(question, isCorrect, option) {
-  if (!question.libraryId || !activeLibrary.value) {
+  if (!question.libraryId || !activeSection.value) {
     return
   }
 
@@ -476,28 +485,6 @@ function persistAnswer(question, isCorrect, option) {
   }, 'Fortschritt konnte nicht gespeichert werden')
 }
 
-async function refreshSessionInfo() {
-  sessionInfo.value = null
-
-  if (!activeLibrary.value) {
-    return
-  }
-
-  await pendingWrites
-
-  if (!(await storageReady)) {
-    return
-  }
-
-  try {
-    const session = await progressStore.getLatestSession(activeLibrary.value.libraryId)
-
-    sessionInfo.value = evaluateSession(session, activeLibrary.value, originalQuestions.value)
-  } catch (error) {
-    persistenceWarning.value = `Lernrunde konnte nicht gelesen werden: ${error.message}`
-  }
-}
-
 const sessionPanel = computed(() => {
   const info = sessionInfo.value
 
@@ -515,19 +502,22 @@ const sessionPanel = computed(() => {
 
   if (info.status === SESSION_STATUS.RESUMABLE) {
     const { stats } = info
+    const newQuestions =
+      info.newQuestionCount > 0
+        ? ` · ${info.newQuestionCount} neue Fragen im Lernabschnitt kommen erst ab der nächsten Runde dazu`
+        : ''
 
     return {
       title: 'Lernrunde läuft',
       text:
         `Frage ${info.currentIndex + 1} von ${stats.totalCount} · ${stats.answeredCount} beantwortet · ` +
-        `${stats.correctCount} richtig · ${stats.incorrectCount} falsch · ${stats.remainingCount} offen`,
+        `${stats.correctCount} richtig · ${stats.incorrectCount} falsch · ${stats.remainingCount} offen${newQuestions}`,
       discardLabel: 'Aktuelle Runde verwerfen und neu starten',
     }
   }
 
   const reasons = {
-    hashChanged: 'Die Datei hat einen anderen Fragenstand als zu Beginn der Runde.',
-    questionsChanged: `Die Fragen dieser Datei passen nicht zur gespeicherten Runde (${info.missingQuestionIds?.length ?? 0} fehlen, ${info.extraQuestionIds?.length ?? 0} neu).`,
+    questionsChanged: `Die Fragen dieses Lernabschnitts passen nicht zur gespeicherten Runde (${info.missingQuestionIds?.length ?? 0} fehlen).`,
     revisionsChanged: `${info.revisedQuestionIds?.length ?? 0} Fragen wurden seit Rundenstart überarbeitet.`,
     currentQuestionMissing: 'Die gespeicherte Position ist nicht auffindbar.',
     invalidSession: 'Die gespeicherte Runde ist nicht lesbar.',
@@ -543,203 +533,264 @@ const sessionPanel = computed(() => {
   }
 })
 
-async function refreshLibrarySummary() {
-  librarySummary.value = null
+async function storageAvailable() {
+  return Boolean(storageReady) && (await storageReady)
+}
 
-  if (!activeLibrary.value) {
-    return
+// Katalog (Lernabschnitts-Karten) neu aus dem Speicher ableiten. Ältere Antworten werden verworfen.
+async function refreshCatalog() {
+  const token = ++catalogToken
+  let next = { sections: [], uncatalogedLibraryIds: [] }
+
+  await pendingWrites
+
+  try {
+    if (memoryEntries.size > 0) {
+      next = buildOverview({ states: memoryStates(), progress: [], sessions: [] })
+    } else if (await storageAvailable()) {
+      next = buildOverview(await readCatalogData(progressStore))
+    }
+  } catch (error) {
+    persistenceWarning.value = `Bibliothek konnte nicht gelesen werden: ${error.message}`
+  }
+
+  if (token === catalogToken) {
+    catalog.value = next
+  }
+}
+
+function memoryStates() {
+  return [...memoryEntries.values()].map(({ library }) => library)
+}
+
+function memorySectionData(sectionId) {
+  const entries = [...memoryEntries.values()].filter(({ library }) => library.learningSectionId === sectionId)
+
+  return {
+    sectionId,
+    states: entries.map(({ library }) => library),
+    contents: entries.map(({ library, questions: entryQuestions }) => ({
+      activeQuestionIndexHash: library.activeQuestionIndexHash,
+      questions: entryQuestions,
+    })),
+    progress: [],
+    session: null,
+  }
+}
+
+// Lädt den Lernabschnitt (Fragen aller zugehörigen Libraries, Fortschritt, Rundenstand) aus dem Speicher.
+// Rückgabe false, wenn der Abschnitt nicht geöffnet werden kann.
+async function refreshSection(sectionId = activeSection.value?.sectionId) {
+  if (!sectionId) {
+    return false
   }
 
   await pendingWrites
 
-  if (!(await storageReady)) {
+  let data
+
+  try {
+    if (memoryEntries.size > 0) {
+      data = memorySectionData(sectionId)
+    } else if (await storageAvailable()) {
+      data = await readSectionData(progressStore, sectionId)
+    } else {
+      return false
+    }
+  } catch (error) {
+    persistenceWarning.value = `Lernabschnitt konnte nicht gelesen werden: ${error.message}`
+    return false
+  }
+
+  const view = buildSectionView(data)
+
+  if (view.error) {
+    activeSection.value = null
+    librarySummary.value = null
+    sessionInfo.value = null
+    importMessage.value = { type: 'error', text: `${view.label}: ${view.error}` }
+    return false
+  }
+
+  activeSection.value = {
+    sectionId,
+    label: view.label,
+    libraries: view.libraries,
+    ephemeral: memoryEntries.size > 0,
+  }
+  originalQuestions.value = view.questions
+  questionBankName.value = view.label
+  librarySummary.value = view.summary
+  sessionInfo.value = view.evaluation
+
+  return true
+}
+
+async function openSection(sectionId) {
+  importMessage.value = null
+  activeSessionId.value = null
+
+  if (!(await refreshSection(sectionId))) {
     return
   }
 
-  try {
-    const records = await progressStore.listProgressForLibrary(activeLibrary.value.libraryId)
-    librarySummary.value = summarizeLibraryProgress(originalQuestions.value, records)
-  } catch (error) {
-    persistenceWarning.value = `Fortschritt konnte nicht gelesen werden: ${error.message}`
-  }
+  questions.value = shuffleOptionsForQuestions(originalQuestions.value)
+  isReviewMode.value = false
+  isQuizStarted.value = false
+  resetQuizProgress()
 }
 
-const importMessages = {
-  [IMPORT_STATUS.NEW]: 'Neue Bibliothek erkannt. Dein Fortschritt wird ab jetzt lokal im Browser gespeichert.',
-  [IMPORT_STATUS.KNOWN]: 'Bekannte Bibliothek erkannt. Gespeicherter Fortschritt wird verwendet.',
-  [IMPORT_STATUS.VERSION_UPDATED]:
-    'Bekannte Bibliothek in neuerer Version erkannt. Gespeicherter Fortschritt bleibt erhalten.',
-}
+async function initializeCatalog() {
+  const factory = globalThis.indexedDB
 
-const UPDATE_INTRO =
-  'Diese Bibliothek wurde aktualisiert. Dein bisheriger Lernfortschritt bleibt gespeichert, ' +
-  'aber die aktuelle Lernrunde kann erst nach einer Fortschrittsmigration fortgesetzt werden.'
-
-function describeUpdate({ changeKind, change, replacements, unexplained }) {
-  const count = (list) => list?.length ?? 0
-
-  if (changeKind === CHANGE_KIND.QUESTIONS_REPLACED) {
-    const inherited = replacements.filter((replacement) => replacement.policy === 'inherit').length
-    const reset = replacements.length - inherited
-
-    return {
-      compatible: true,
-      text:
-        `${UPDATE_INTRO} ${replacements.length} Fragen wurden ersetzt: ${inherited} übernehmen den bisherigen Fortschritt ` +
-        `(gleiches Lernziel), ${reset} starten ohne Fortschritt (neues Lernziel). ` +
-        'Eine laufende Lernrunde wird nur angepasst, wenn das sicher möglich ist. ' +
-        'Du kannst die Aktualisierung bewusst übernehmen. Die Datei wurde noch nicht geladen.',
-    }
+  if (!factory) {
+    return
   }
 
-  if (changeKind === CHANGE_KIND.QUESTIONS_REMOVED) {
-    return {
-      compatible: false,
-      text:
-        `${UPDATE_INTRO} ${count(change.removed)} Fragen wurden entfernt, ${count(unexplained)} davon sind durch ` +
-        'den Ersetzungs-Index nicht erklärt (Index fehlt oder die Ziel-Bibliothek ist nicht geladen). ' +
-        'Lade die Ersetzungsliste (retired-index.json) bzw. die Ziel-Bibliothek und importiere die Datei erneut. ' +
-        'Die Datei wurde nicht geladen; Fortschritt und Lernrunde bleiben unverändert gespeichert.',
-    }
-  }
+  // Reine V1-Nutzung legt keine Datenbank an: nur öffnen, wenn es schon eine gibt.
+  if (typeof factory.databases === 'function') {
+    try {
+      const databases = await factory.databases()
 
-  if (changeKind === CHANGE_KIND.REVISIONS_ONLY) {
-    return {
-      compatible: true,
-      text:
-        `${UPDATE_INTRO} ${count(change.revised)} Fragen wurden überarbeitet; dein Fortschritt dazu bleibt erhalten. ` +
-        'Du kannst die Aktualisierung bewusst übernehmen. Die Datei wurde noch nicht geladen.',
-    }
-  }
-
-  if (changeKind === CHANGE_KIND.QUESTIONS_ADDED) {
-    return {
-      compatible: true,
-      text:
-        `${UPDATE_INTRO} ${count(change.added)} Fragen sind neu (sie starten ohne Fortschritt)` +
-        (count(change.revised) > 0 ? `, ${count(change.revised)} wurden überarbeitet` : '') +
-        '. Eine laufende Lernrunde kann danach nicht fortgesetzt, nur neu gestartet werden. ' +
-        'Die Datei wurde noch nicht geladen.',
-    }
-  }
-
-  return {
-    compatible: false,
-    text:
-      `${UPDATE_INTRO} Diese Änderung kann in dieser App-Version noch nicht übernommen werden ` +
-      '(z. B. entfernte Fragen oder eine abweichende Datei). Die Datei wurde nicht geladen; ' +
-      'Fortschritt und Lernrunde bleiben unverändert gespeichert.',
-  }
-}
-
-// Gibt false zurück, wenn der Import kontrolliert gestoppt wird.
-async function registerV2Library(library) {
-  if (!(await ensureStorage())) {
-    return true
-  }
-
-  try {
-    const result = await registerLibraryImport(progressStore, library, { retiredIndex: retiredIndex.value })
-
-    if (result.status === IMPORT_STATUS.UPDATE_REQUIRES_MIGRATION) {
-      const description = describeUpdate(result)
-
-      importMessage.value = { type: 'error', text: description.text }
-      pendingUpdate.value = description.compatible ? { library, ...description } : null
-      return false
-    }
-
-    importMessage.value = { type: 'info', text: importMessages[result.status] }
-    return true
-  } catch (error) {
-    persistenceWarning.value = `Fortschritt wird nicht gespeichert: ${error.message}`
-    return true
-  }
-}
-
-async function loadPrivateQuestions({ questions: importedQuestions, fileName, library = null }) {
-  importMessage.value = null
-  persistenceWarning.value = ''
-  pendingUpdate.value = null
-  sessionInfo.value = null
-  activeSessionId.value = null
-
-  if (library) {
-    if (!(await registerV2Library(library))) {
-      // Kontrolliert gestoppt: Datei merken, falls das Update bewusst übernommen werden darf.
-      if (pendingUpdate.value) {
-        pendingUpdate.value = { ...pendingUpdate.value, questions: importedQuestions, fileName }
+      if (!databases.some((database) => database.name === DB_NAME)) {
+        return
       }
-
-      return
+    } catch {
+      // Unbekannt: normal weitermachen.
     }
-
-    activeLibrary.value = library
-  } else {
-    activeLibrary.value = null
-    librarySummary.value = null
   }
 
-  await showLoadedBank(importedQuestions, fileName)
+  if (await ensureStorage()) {
+    await refreshCatalog()
+  }
 }
 
-async function showLoadedBank(importedQuestions, fileName) {
+function loadV1Bank({ questions: importedQuestions, fileName }) {
+  activeSection.value = null
+  activeSessionId.value = null
+  librarySummary.value = null
+  sessionInfo.value = null
   originalQuestions.value = importedQuestions
   questions.value = shuffleOptionsForQuestions(importedQuestions)
   questionBankName.value = `Private Fragebank: ${fileName}`
   isReviewMode.value = false
   isQuizStarted.value = false
   resetQuizProgress()
-  await refreshLibrarySummary()
-  await refreshSessionInfo()
+}
+
+// Ohne Speicher: Libraries gelten nur für diese Sitzung (kein Fortschritt, keine Rundenspeicherung).
+async function importWithoutStorage(entries) {
+  const plan = planLibraryBatch(entries)
+  const results = [...plan.results]
+
+  plan.importable.forEach((entry) => {
+    memoryEntries.set(entry.library.libraryId, entry)
+    results.push({
+      fileName: entry.fileName,
+      libraryId: entry.library.libraryId,
+      title: entry.library.title,
+      learningSectionId: entry.library.learningSectionId,
+      status: BATCH_STATUS.NEW,
+      message: 'Nur für diese Sitzung geladen, da der lokale Speicher nicht verfügbar ist.',
+    })
+  })
+
+  importReport.value = {
+    results: results.sort((a, b) => a.fileName.localeCompare(b.fileName)),
+    summary: summarizeBatch(entries, plan.importable),
+    pendingLibraryIds: [],
+  }
+  persistenceWarning.value = `Fortschritt wird nicht gespeichert: ${storageError || 'Speicher nicht verfügbar.'}`
+  await refreshCatalog()
+}
+
+async function importBatch(entries) {
+  const needsStorage = entries.some((entry) => entry.kind === 'v2' || entry.kind === 'retiredIndex')
+
+  if (!needsStorage) {
+    // Nur ungültige/V1-Dateien im Batch: es gibt nichts zu speichern, nur zu berichten.
+    importReport.value = {
+      results: planLibraryBatch(entries).results.sort((a, b) => a.fileName.localeCompare(b.fileName)),
+      summary: summarizeBatch(entries, []),
+      pendingLibraryIds: [],
+    }
+    return
+  }
+
+  if (!(await ensureStorage())) {
+    await importWithoutStorage(entries)
+    return
+  }
+
+  try {
+    const batch = await importLibraryBatch(progressStore, entries, { retiredIndex: retiredIndex.value })
+
+    retiredIndex.value = batch.retiredIndex
+    pendingEntries = batch.pending
+    importReport.value = {
+      results: batch.results,
+      summary: batch.summary,
+      pendingLibraryIds: [...batch.pending.keys()],
+    }
+  } catch (error) {
+    persistenceWarning.value = `Fortschritt wird nicht gespeichert: ${error.message}`
+    return
+  }
+
+  await refreshCatalog()
+  await refreshSection()
+}
+
+async function handleFilesLoaded(entries) {
+  importMessage.value = null
+  persistenceWarning.value = ''
+  importReport.value = null
+  pendingEntries = new Map()
+
+  if (entries.length === 1 && entries[0].kind === 'v1') {
+    loadV1Bank(entries[0])
+    return
+  }
+
+  await importBatch(entries)
 }
 
 // Bewusste Entscheidung des Nutzers: kompatible Änderung übernehmen (Fortschritt bleibt, nichts wird kopiert).
-async function confirmLibraryUpdate() {
-  const pending = pendingUpdate.value
+async function confirmLibraryUpdate(libraryId) {
+  const entry = pendingEntries.get(libraryId)
 
-  if (!pending) {
+  if (!entry) {
     return
+  }
+
+  const setResult = (changes) => {
+    pendingEntries.delete(libraryId)
+    importReport.value = {
+      ...importReport.value,
+      results: importReport.value.results.map((result) =>
+        result.libraryId === libraryId ? { ...result, ...changes } : result,
+      ),
+      pendingLibraryIds: [...pendingEntries.keys()],
+    }
   }
 
   try {
     await pendingWrites
-    await applyLibraryUpdate(progressStore, pending.library, { retiredIndex: retiredIndex.value })
+    await confirmPendingUpdate(progressStore, entry, { retiredIndex: retiredIndex.value })
   } catch (error) {
-    importMessage.value = { type: 'error', text: `Aktualisierung nicht möglich: ${error.message}` }
-    pendingUpdate.value = null
+    setResult({ status: BATCH_STATUS.REJECTED, message: `Aktualisierung nicht möglich: ${error.message}` })
     return
   }
 
-  pendingUpdate.value = null
-  importMessage.value = {
-    type: 'info',
-    text: `Bibliothek auf Version ${pending.library.libraryVersion} aktualisiert. Dein Fortschritt bleibt erhalten.`,
-  }
-  activeLibrary.value = pending.library
-  await showLoadedBank(pending.questions, pending.fileName)
+  setResult({
+    status: BATCH_STATUS.VERSION_UPDATED,
+    message: `Bibliothek auf Version ${entry.library.libraryVersion} aktualisiert. Dein Fortschritt bleibt erhalten.`,
+  })
+  await refreshCatalog()
+  await openSection(entry.library.learningSectionId)
 }
 
-async function loadRetiredIndex({ entries, fileName }) {
-  importMessage.value = null
-  persistenceWarning.value = ''
-
-  if (!(await ensureStorage())) {
-    return
-  }
-
-  try {
-    await progressStore.saveRetiredIndex(entries)
-    retiredIndex.value = entries
-    importMessage.value = {
-      type: 'info',
-      text: `Ersetzungsliste ${fileName} geladen (${Object.keys(entries).length} Einträge). Sie wird bei Bibliotheks-Updates verwendet.`,
-    }
-  } catch (error) {
-    persistenceWarning.value = `Ersetzungsliste konnte nicht gespeichert werden: ${error.message}`
-  }
-}
-
+onMounted(initializeCatalog)
 onBeforeUnmount(() => progressStore.close())
 </script>
 
@@ -757,10 +808,7 @@ onBeforeUnmount(() => progressStore.close())
     </section>
 
     <section v-if="!isQuizStarted" class="start-layout" aria-label="Quiz vorbereiten">
-      <PrivateQuestionImporter
-        @questions-loaded="loadPrivateQuestions"
-        @retired-index-loaded="loadRetiredIndex"
-      />
+      <PrivateQuestionImporter :empty="!hasCatalog" @files-loaded="handleFilesLoaded" />
 
       <p
         v-if="importMessage"
@@ -770,15 +818,28 @@ onBeforeUnmount(() => progressStore.close())
       >
         {{ importMessage.text }}
       </p>
-      <section v-if="pendingUpdate" class="start-card" aria-label="Bibliotheks-Update">
-        <h2>Aktualisierung verfügbar</h2>
-        <button class="start-button" type="button" @click="confirmLibraryUpdate">
-          Aktualisierung übernehmen
-        </button>
-      </section>
+      <ImportReport v-if="importReport" :report="importReport" @confirm-update="confirmLibraryUpdate" />
       <p v-if="persistenceWarning" class="library-message library-message-warning" role="alert">
         {{ persistenceWarning }}
       </p>
+      <p v-if="catalog.uncatalogedLibraryIds.length > 0" class="section-note">
+        {{ catalog.uncatalogedLibraryIds.length }} früher gespeicherte Bibliotheken enthalten noch keine lokalen
+        Fragen. Bitte importiere ihre Dateien einmal erneut; dein Fortschritt bleibt dabei erhalten.
+      </p>
+
+      <SectionOverview
+        :sections="catalog.sections"
+        :selected-section-id="activeSection?.sectionId ?? null"
+        @open-section="openSection"
+      />
+
+      <section v-if="activeSection" class="start-card" aria-label="Lernabschnitt">
+        <h2>{{ activeSection.label }}</h2>
+        <p>
+          {{ activeSection.libraries.length }}
+          {{ activeSection.libraries.length === 1 ? 'Library' : 'Libraries' }} · {{ originalQuestions.length }} Fragen
+        </p>
+      </section>
 
       <section v-if="librarySummary" class="start-card" aria-label="Gespeicherter Fortschritt">
         <h2>Gespeicherter Fortschritt</h2>
@@ -811,6 +872,13 @@ onBeforeUnmount(() => progressStore.close())
         <button class="secondary-button" type="button" @click="startLearningSession">
           {{ sessionPanel.discardLabel }}
         </button>
+      </section>
+
+      <section v-else-if="activeSection" class="start-card">
+        <h2>Lernrunde bereit</h2>
+        <p>Die Runde enthält alle Fragen dieses Lernabschnitts in gemischter Reihenfolge.</p>
+
+        <button class="start-button" type="button" @click="startQuiz">Lernrunde starten</button>
       </section>
 
       <section v-else class="start-card">
