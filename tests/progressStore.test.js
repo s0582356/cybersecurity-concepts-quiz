@@ -4,6 +4,7 @@ import {
   createProgressStore,
   DB_VERSION,
   StorageSchemaError,
+  StorageUnavailableError,
   STORAGE_SCHEMA_VERSION,
 } from '../src/storage/progressStore.js'
 import { IMPORT_STATUS, registerLibraryImport } from '../src/storage/libraryImport.js'
@@ -67,7 +68,7 @@ describe('storage initialization', () => {
 
     expect(await store.getStorageSchemaVersion()).toBe(1)
     expect(STORAGE_SCHEMA_VERSION).toBe(1)
-    expect(DB_VERSION).toBe(3)
+    expect(DB_VERSION).toBe(4)
   })
 
   it('rejects an unknown storageSchemaVersion in a controlled way', async () => {
@@ -92,6 +93,186 @@ describe('storage initialization', () => {
     raw.close()
 
     await expect(openStore().initialize()).rejects.toBeInstanceOf(StorageSchemaError)
+  })
+})
+
+// Phase 3B: Upgrade 3 -> 4 legt `examAttempts` additiv an. Die v3-Datenbank wird hier von Hand mit dem damaligen
+// Schema aufgebaut (nicht über den aktuellen Code), damit der Test den echten Upgrade-Pfad prüft.
+describe('database upgrade 3 -> 4 (examAttempts)', () => {
+  const STORES_V3 = ['meta', 'libraries', 'progress', 'sessions', 'libraryContent']
+
+  // `keepOpen`: die v3-Verbindung bleibt offen und liefert die Datenbank (simuliert einen noch geöffneten alten Tab).
+  function createV3Database(name, { keepOpen = false } = {}) {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(name, 3)
+
+      request.onupgradeneeded = () => {
+        const database = request.result
+        database.createObjectStore('meta', { keyPath: 'key' })
+        database.createObjectStore('libraries', { keyPath: 'libraryId' })
+        database.createObjectStore('progress', { keyPath: ['libraryId', 'questionId'] }).createIndex('byLibrary', 'libraryId')
+        database.createObjectStore('sessions', { keyPath: 'sessionId' }).createIndex('byLibrary', 'libraryId')
+        database.createObjectStore('libraryContent', { keyPath: 'libraryId' })
+      }
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction(STORES_V3, 'readwrite')
+
+        transaction.objectStore('meta').put({ key: 'storageSchemaVersion', value: 1 })
+        transaction.objectStore('libraries').put({
+          libraryId: 'old-lib',
+          libraryVersion: '1.0.0',
+          activeQuestionIndexHash: HASH_A,
+          firstImportedAt: 1,
+          lastAccessedAt: 2,
+        })
+        transaction.objectStore('progress').put({
+          libraryId: 'old-lib',
+          questionId: 'sec-a01-0001',
+          attempts: 3,
+          correctCount: 2,
+          incorrectCount: 1,
+          lastResult: 'correct',
+          answered: true,
+          lastAnsweredAt: 5,
+        })
+        transaction.objectStore('sessions').put({ sessionId: 'old-session', libraryId: 'old-lib', sessionStartedAt: 7, sessionMode: 'learning' })
+        transaction.objectStore('libraryContent').put({ libraryId: 'old-lib', activeQuestionIndexHash: HASH_A, questions: [{ id: 'sec-a01-0001' }] })
+        transaction.oncomplete = () => {
+          if (keepOpen) {
+            resolve(database)
+            return
+          }
+
+          database.close()
+          resolve()
+        }
+        transaction.onerror = () => reject(transaction.error)
+      }
+      request.onerror = () => reject(request.error)
+    })
+  }
+
+  function storeNames(name) {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(name)
+
+      request.onsuccess = () => {
+        const database = request.result
+        const result = { version: database.version, names: [...database.objectStoreNames].sort() }
+
+        if (database.objectStoreNames.contains('examAttempts')) {
+          const exams = database.transaction('examAttempts').objectStore('examAttempts')
+
+          result.keyPath = exams.keyPath
+          result.indexes = [...exams.indexNames]
+        }
+
+        database.close()
+        resolve(result)
+      }
+      request.onerror = () => reject(request.error)
+    })
+  }
+
+  it('creates the examAttempts store and keeps every existing store and record', async () => {
+    await createV3Database(dbName)
+    expect((await storeNames(dbName)).names).not.toContain('examAttempts')
+
+    const store = openStore()
+    await store.initialize()
+
+    expect(await storeNames(dbName)).toEqual({
+      version: 4,
+      names: [...STORES_V3, 'examAttempts'].sort(),
+      keyPath: 'examSessionId',
+      indexes: ['byStatus'],
+    })
+    expect(await store.getStorageSchemaVersion()).toBe(1)
+    expect((await store.getLibraryState('old-lib')).libraryVersion).toBe('1.0.0')
+    expect(await store.listAllProgress()).toEqual([
+      {
+        libraryId: 'old-lib',
+        questionId: 'sec-a01-0001',
+        attempts: 3,
+        correctCount: 2,
+        incorrectCount: 1,
+        lastResult: 'correct',
+        answered: true,
+        lastAnsweredAt: 5,
+      },
+    ])
+    expect((await store.getLatestSession('old-lib')).sessionId).toBe('old-session')
+    expect((await store.getLibraryContent('old-lib')).questions).toEqual([{ id: 'sec-a01-0001' }])
+    expect(await store.listExamAttempts()).toEqual([])
+    expect(await store.getActiveExamAttempt()).toBeNull()
+  })
+
+  it('is repeatable: reopening a v4 database changes nothing', async () => {
+    await createV3Database(dbName)
+    const first = openStore()
+    await first.initialize()
+    first.close()
+
+    const again = openStore()
+    await again.initialize()
+
+    expect(await storeNames(dbName)).toMatchObject({ version: 4, indexes: ['byStatus'] })
+    expect(await again.listAllProgress()).toHaveLength(1)
+  })
+
+  // P3B-RT-001: ein noch offener v3-Tab darf das Upgrade nicht unbegrenzt blockieren.
+  it('reports a blocked upgrade (old v3 connection stays open) instead of hanging, and recovers once it closes', async () => {
+    const oldTab = await createV3Database(dbName, { keepOpen: true })
+    const store = openStore()
+    const outcome = await Promise.race([
+      store.initialize().then(
+        () => 'resolved',
+        (error) => error,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve('still pending'), 1500)),
+    ])
+
+    expect(outcome).not.toBe('still pending')
+    expect(outcome).toBeInstanceOf(StorageUnavailableError)
+    expect(outcome.i18n).toMatchObject({ i18n: 'err.storage.blocked' })
+    expect(outcome.message).toContain('Tabs')
+    await expect(store.getLibraryState('old-lib')).rejects.toThrow()
+
+    // Alter Tab wird geschlossen: das ausstehende Upgrade läuft durch, die danach nutzlose Verbindung schließt sich selbst.
+    oldTab.close()
+
+    const retry = openStore()
+    await retry.initialize()
+
+    expect(await storeNames(dbName)).toMatchObject({ version: 4, indexes: ['byStatus'] })
+    expect((await retry.getLibraryState('old-lib')).libraryVersion).toBe('1.0.0')
+    expect(await retry.listAllProgress()).toHaveLength(1)
+    expect(await retry.listExamAttempts()).toEqual([])
+  })
+
+  it('closes its own connection on versionchange so a later upgrade is never blocked', async () => {
+    const store = openStore()
+    await store.initialize()
+
+    // Ein künftiger Build verlangt Version 5: unsere Verbindung muss freiwillig schließen.
+    const upgraded = await Promise.race([
+      rawOpen(dbName, DB_VERSION + 1).then((database) => {
+        database.close()
+        return 'upgraded'
+      }),
+      new Promise((resolve) => setTimeout(() => resolve('blocked'), 1500)),
+    ])
+
+    expect(upgraded).toBe('upgraded')
+    // Danach meldet der Store kontrolliert "nicht initialisiert" statt mit einer toten Verbindung zu arbeiten.
+    await expect(store.getLibraryState('any')).rejects.toBeInstanceOf(StorageUnavailableError)
+  })
+
+  it('creates the store on a fresh database as well', async () => {
+    await openStore().initialize()
+
+    expect((await storeNames(dbName)).names).toEqual([...STORES_V3, 'examAttempts'].sort())
   })
 })
 

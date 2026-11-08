@@ -8,6 +8,7 @@
 
 import { parseRetiredIndex } from '../../domain/replacementMigration.js'
 import {
+  MEMORY_AID_TYPES,
   normalizeLocalizedContent,
   validateEnglishContent,
   validateLocalizedContent,
@@ -234,6 +235,13 @@ export function parseV2Library(data) {
 
     if (!isNonEmptyString(german.explanation)) {
       throw new LibraryParseError('parse.v2.germanExplanation', where)
+    }
+
+    // V2-Schema: ist `memoryAid` vorhanden, ist `type` Pflicht und ein Wert des geschlossenen Enums (wie bei Englisch).
+    // Ein unbekannter Typ ist schema-ungültig (keine stille Reparatur, keine Forward-Compatibility); fehlt `memoryAid`
+    // ganz, bleibt die deutsche Fassung gültig (ältere Inhalte). Eine ungültige Frage weist die ganze Library ab.
+    if (german.memoryAid !== undefined && german.memoryAid !== null && !MEMORY_AID_TYPES.includes(german.memoryAid.type)) {
+      throw new LibraryParseError('parse.v2.germanMemoryAid', where)
     }
 
     // Phase 2E: der Lernabschnitt steht je Frage (`learningSectionId`), nicht auf Library-Ebene.

@@ -5,6 +5,8 @@ import ScoreBox from './components/ScoreBox.vue'
 import PrivateQuestionImporter from './components/PrivateQuestionImporter.vue'
 import ImportReport from './components/ImportReport.vue'
 import SectionOverview from './components/SectionOverview.vue'
+import ExamEntryCard from './components/ExamEntryCard.vue'
+import ExamMode from './components/ExamMode.vue'
 import sampleQuestions from './data/public/sampleQuestions.json'
 import { BATCH_STATUS, planLibraryBatch, summarizeBatch } from './domain/libraryCatalog.js'
 import {
@@ -36,6 +38,9 @@ import {
   uiLocale,
 } from './i18n/index.js'
 import { createSectionSessionRecord } from './domain/sectionSession.js'
+import { validateExamAttempt, summarizeExamAttempt } from './domain/examAttempt.js'
+import { pickLastExamResult } from './domain/examReview.js'
+import { EXAM_MIN_QUESTIONS } from './domain/examSelection.js'
 import { DB_NAME, createProgressStore } from './storage/progressStore.js'
 import { confirmPendingUpdate, importLibraryBatch } from './storage/catalogImport.js'
 import { buildOverview, buildSectionView, readCatalogData, readSectionData } from './storage/sectionService.js'
@@ -82,6 +87,34 @@ let memoryEntries = new Map()
 let catalogToken = 0
 
 const hasCatalog = computed(() => catalog.value.sections.length > 0)
+
+// Phase 3C: Einstieg in den Prüfungsmodus (logische Sektion neben den Lernabschnitten, keine eigene Library).
+// Die Kachel kennt nur Zahlen des laufenden Versuchs; der Versuch selbst bleibt im Exam-Core/-Store.
+const examOpen = ref(false)
+const examStorageReady = ref(false)
+const activeExam = ref(null)
+// Phase 3D: es gibt ein abgeschlossenes Ergebnis (nur Bool); es bleibt auch ohne aktuellen Katalog erreichbar.
+const hasExamResult = ref(false)
+
+const examEntry = computed(() => {
+  if (!hasCatalog.value && !activeExam.value && !hasExamResult.value) {
+    return null
+  }
+
+  if (!examStorageReady.value) {
+    return { state: 'unavailableStorage' }
+  }
+
+  if (activeExam.value) {
+    return activeExam.value.damaged ? { state: 'damaged' } : { state: 'resume', ...activeExam.value }
+  }
+
+  const count = catalog.value.sections.reduce((total, section) => total + section.questionCount, 0)
+
+  return count >= EXAM_MIN_QUESTIONS
+    ? { state: 'start', hasResult: hasExamResult.value }
+    : { state: 'unavailablePool', count, hasResult: hasExamResult.value }
+})
 
 // Phase 2F (Contract-Fix): Sprache und Fragenmenge gehören zur Runde, nicht zur globalen Präferenz.
 // - Eine neue Runde nutzt die globale Präferenz (Inhaltssprache + Modus "Nur Englisch"/"Alle verfügbaren Fragen")
@@ -186,6 +219,11 @@ const sessionLanguageInfo = computed(() => {
 })
 
 const bankLabel = computed(() => {
+  // Im Prüfungsmodus stammen die Fragen aus den lokal importierten Libraries, nicht aus den öffentlichen Beispielen.
+  if (examOpen.value) {
+    return t('exam.header.label')
+  }
+
   if (activeSection.value) {
     return t(activeSection.value.label)
   }
@@ -792,6 +830,40 @@ async function refreshCatalog() {
   if (token === catalogToken) {
     catalog.value = next
   }
+
+  await refreshExamEntry()
+}
+
+// Laufende Prüfung für die Einstiegskachel (nur Zahlen). Ohne Speicher gibt es keinen Prüfungsmodus.
+async function refreshExamEntry() {
+  const ready = memoryEntries.size === 0 && (await storageAvailable())
+  let next = null
+  let nextHasResult = false
+
+  if (ready) {
+    try {
+      const record = await progressStore.getActiveExamAttempt()
+
+      nextHasResult = pickLastExamResult(await progressStore.listExamAttempts()) !== null
+
+      if (record) {
+        next = validateExamAttempt(record).valid
+          ? { currentIndex: record.currentIndex, ...summarizeExamAttempt(record) }
+          : { damaged: true }
+      }
+    } catch (error) {
+      persistenceWarning.value = msg('warn.libraryNotRead', { detail: describeError(error) })
+    }
+  }
+
+  examStorageReady.value = ready
+  activeExam.value = next
+  hasExamResult.value = nextHasResult
+}
+
+function closeExam() {
+  examOpen.value = false
+  refreshExamEntry()
 }
 
 function memoryStates() {
@@ -1055,7 +1127,7 @@ onBeforeUnmount(() => progressStore.close())
       </div>
       <p class="eyebrow">{{ t('app.eyebrow') }}</p>
       <h1>{{ t('app.title') }}</h1>
-      <p class="intro">{{ t('app.intro') }}</p>
+      <p class="intro">{{ examOpen ? t('exam.header.intro') : t('app.intro') }}</p>
       <p class="question-bank-label">{{ bankLabel }}</p>
       <p v-if="isReviewMode" class="review-mode-label">{{ t('app.reviewMode') }}</p>
       <p v-if="contentNotice" class="language-note" role="status">{{ t(contentNotice) }}</p>
@@ -1070,7 +1142,14 @@ onBeforeUnmount(() => progressStore.close())
       </div>
     </section>
 
-    <section v-if="!isQuizStarted" class="start-layout" :aria-label="t('app.prepare')">
+    <ExamMode
+      v-if="examOpen"
+      :store="progressStore"
+      :default-language="contentLocale"
+      @close="closeExam"
+    />
+
+    <section v-else-if="!isQuizStarted" class="start-layout" :aria-label="t('app.prepare')">
       <PrivateQuestionImporter :empty="!hasCatalog" @files-loaded="handleFilesLoaded" />
 
       <p
@@ -1094,6 +1173,8 @@ onBeforeUnmount(() => progressStore.close())
         :selected-section-id="activeSection?.sectionId ?? null"
         @open-section="openSection"
       />
+
+      <ExamEntryCard v-if="examEntry" :entry="examEntry" @open="examOpen = true" />
 
       <section v-if="activeSection" class="start-card" :aria-label="t('section.detail')">
         <h2>{{ t(activeSection.label) }}</h2>

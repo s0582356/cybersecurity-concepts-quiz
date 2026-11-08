@@ -8,6 +8,10 @@
 // Fortschritt/Rundenzustand: nur IDs, Zähler, Zeitstempel. Die Fragen selbst stehen ausschließlich
 // im Store `libraryContent` (Phase 2E, lokal im Browser, nie hochgeladen).
 //
+// Phase 3B: neuer Object Store `examAttempts` (additiv, Prüfungsmodus). DB_VERSION steigt auf 4. Der Store ist
+// vom Lernfortschritt vollständig getrennt: Prüfungsmethoden öffnen ausschließlich `examAttempts`, und kein
+// Update-/Ersetzungspfad öffnet ihn. STORAGE_SCHEMA_VERSION bleibt 1 (bestehende Daten werden nicht migriert).
+//
 // Phase 2E: neuer Object Store `libraryContent` (additiv): die für die Lernabschnitts-Ansicht
 // nötigen Fragen werden lokal im Browser abgelegt, damit nach einem Reload keine Datei mehr gewählt
 // werden muss. DB_VERSION steigt auf 3; das Datenmodell der bestehenden Stores wird nur um optionale
@@ -28,6 +32,14 @@ import {
 import { LocalizedError, translate, msg } from '../i18n/index.js'
 import { applyReplacementToProgress } from '../domain/replacementMigration.js'
 import {
+  EXAM_STATUS,
+  applyExamAnswer,
+  finalizeExamAttemptRecord,
+  moveExamPosition,
+  setExamPosition,
+  validateExamAttempt,
+} from '../domain/examAttempt.js'
+import {
   isSectionSession,
   migrateSectionSessionReplacements,
   migrateSectionSessionToLibrary,
@@ -35,7 +47,7 @@ import {
 } from '../domain/sectionSession.js'
 
 export const DB_NAME = 'cybersecurity-concepts-quiz'
-export const DB_VERSION = 3
+export const DB_VERSION = 4
 export const STORAGE_SCHEMA_VERSION = 1
 
 const STORE_META = 'meta'
@@ -43,7 +55,9 @@ const STORE_LIBRARIES = 'libraries'
 const STORE_PROGRESS = 'progress'
 const STORE_SESSIONS = 'sessions'
 const STORE_CONTENT = 'libraryContent'
+const STORE_EXAMS = 'examAttempts'
 const INDEX_BY_LIBRARY = 'byLibrary'
+const INDEX_BY_STATUS = 'byStatus'
 const META_SCHEMA_KEY = 'storageSchemaVersion'
 const META_RETIRED_INDEX_KEY = 'retiredIndex'
 
@@ -106,11 +120,19 @@ function upgradeDatabase(database) {
   if (!database.objectStoreNames.contains(STORE_CONTENT)) {
     database.createObjectStore(STORE_CONTENT, { keyPath: 'libraryId' })
   }
+
+  if (!database.objectStoreNames.contains(STORE_EXAMS)) {
+    const exams = database.createObjectStore(STORE_EXAMS, { keyPath: 'examSessionId' })
+    exams.createIndex(INDEX_BY_STATUS, 'status')
+  }
 }
 
-function openDatabase(factory, dbName) {
+// `onClosed` wird aufgerufen, wenn eine neuere Version dieser App (anderer Tab) ein Schema-Upgrade verlangt und
+// diese Verbindung dafür geschlossen wird.
+function openDatabase(factory, dbName, onClosed = () => {}) {
   return new Promise((resolve, reject) => {
     let request
+    let settled = false
 
     try {
       request = factory.open(dbName, DB_VERSION)
@@ -120,9 +142,39 @@ function openDatabase(factory, dbName) {
     }
 
     request.onupgradeneeded = () => upgradeDatabase(request.result)
-    request.onsuccess = () => resolve(request.result)
+    // Eine ältere Verbindung (alter Tab/Build) hält das Upgrade auf: kontrolliert melden statt unbegrenzt warten.
+    // Der Open-Request bleibt bestehen und schließt das Upgrade ab, sobald der alte Tab zu ist; diese dann nutzlose
+    // Verbindung wird sofort wieder geschlossen (siehe onsuccess).
+    request.onblocked = () => {
+      if (!settled) {
+        settled = true
+        reject(new StorageUnavailableError('err.storage.blocked'))
+      }
+    }
+    request.onsuccess = () => {
+      const opened = request.result
+
+      if (settled) {
+        opened.close()
+        return
+      }
+
+      // Künftige Upgrades dürfen nie an dieser Verbindung scheitern: bei `versionchange` schließen.
+      opened.onversionchange = () => {
+        opened.close()
+        onClosed(opened)
+      }
+      settled = true
+      resolve(opened)
+    }
     request.onerror = () => {
       const { error } = request
+
+      if (settled) {
+        return
+      }
+
+      settled = true
 
       if (error?.name === 'VersionError') {
         // Die Datenbank wurde von einer neueren App-Version angelegt.
@@ -171,7 +223,11 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
       throw new StorageUnavailableError('err.storage.unavailable')
     }
 
-    const opened = await openDatabase(factory, dbName)
+    const opened = await openDatabase(factory, dbName, (closed) => {
+      if (database === closed) {
+        database = null
+      }
+    })
     const transaction = opened.transaction(STORE_META, 'readwrite')
     const metaStore = transaction.objectStore(STORE_META)
     const existing = await requestResult(metaStore.get(META_SCHEMA_KEY))
@@ -496,6 +552,159 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     return { recorded: true, progress, session: result.session }
   }
 
+  // --- Prüfungsversuche (Phase 3B) ---
+  // Jede Methode öffnet ausschließlich den Store `examAttempts`: Lernfortschritt, Lernrunden, Library-States
+  // und Library-Inhalte werden weder gelesen noch geschrieben. Mutationen laufen je in EINER Transaktion
+  // (lesen, prüfen, schreiben); ein abgelehnter Aufruf schreibt nichts.
+
+  const newestExamFirst = (a, b) => b.sessionStartedAt - a.sessionStartedAt
+
+  // Plain copy: IndexedDB kann keine Vue-Proxys klonen.
+  function examRecord(attempt) {
+    return JSON.parse(JSON.stringify(attempt))
+  }
+
+  async function getExamAttempt(examSessionId) {
+    requireString(examSessionId, 'examSessionId')
+
+    const record = await requestResult(db().transaction(STORE_EXAMS).objectStore(STORE_EXAMS).get(examSessionId))
+
+    return record ?? null
+  }
+
+  // Der (höchstens eine) laufende Versuch. Abgegebene Versuche werden nie als aktiv geliefert.
+  async function getActiveExamAttempt() {
+    const active = await requestResult(
+      db()
+        .transaction(STORE_EXAMS)
+        .objectStore(STORE_EXAMS)
+        .index(INDEX_BY_STATUS)
+        .getAll(EXAM_STATUS.IN_PROGRESS),
+    )
+
+    return active.sort(newestExamFirst)[0] ?? null
+  }
+
+  async function listExamAttempts() {
+    const attempts = await requestResult(db().transaction(STORE_EXAMS).objectStore(STORE_EXAMS).getAll())
+
+    return attempts.sort(newestExamFirst)
+  }
+
+  // Schreibt einen neuen laufenden Versuch. Ein zweiter laufender Versuch wird abgelehnt (erst abgeben oder
+  // verwerfen); eine vorhandene ID wird nie überschrieben.
+  async function startExamAttempt(attempt) {
+    const record = examRecord(attempt)
+    const check = validateExamAttempt(record)
+
+    if (!check.valid || record.status !== EXAM_STATUS.IN_PROGRESS) {
+      return { started: false, reason: 'invalid', problems: check.problems }
+    }
+
+    const transaction = db().transaction(STORE_EXAMS, 'readwrite')
+    const examStore = transaction.objectStore(STORE_EXAMS)
+    const [activeCount, existing] = await Promise.all([
+      requestResult(examStore.index(INDEX_BY_STATUS).count(EXAM_STATUS.IN_PROGRESS)),
+      requestResult(examStore.get(record.examSessionId)),
+    ])
+
+    if (activeCount > 0 || existing) {
+      await transactionDone(transaction)
+      return { started: false, reason: existing ? 'duplicateId' : 'activeExists' }
+    }
+
+    examStore.put(record)
+    await transactionDone(transaction)
+
+    return { started: true, attempt: record }
+  }
+
+  // Lesen, Anwenden, Schreiben in einer Transaktion. `apply(record)` liefert { result, write }; `write` (neuer
+  // Datensatz oder null) wird nur gespeichert, wenn die Änderung zulässig war.
+  async function updateExamAttempt(examSessionId, onMissing, apply) {
+    requireString(examSessionId, 'examSessionId')
+
+    const transaction = db().transaction(STORE_EXAMS, 'readwrite')
+    const examStore = transaction.objectStore(STORE_EXAMS)
+    const record = await requestResult(examStore.get(examSessionId))
+
+    if (!record) {
+      await transactionDone(transaction)
+      return onMissing
+    }
+
+    const { result, write } = apply(record)
+
+    if (write) {
+      examStore.put(examRecord(write))
+    }
+
+    await transactionDone(transaction)
+
+    return result
+  }
+
+  // Antwort setzen/ersetzen (nur laufender Versuch, gültige Frage, gültiger Optionsschlüssel).
+  function recordExamAnswer({ examSessionId, questionId, selectedOptionKey, now = Date.now() }) {
+    return updateExamAttempt(examSessionId, { recorded: false, reason: 'notFound' }, (record) => {
+      const outcome = applyExamAnswer(record, { questionId, selectedOptionKey, now })
+
+      return outcome.applied
+        ? { result: { recorded: true, attempt: outcome.attempt }, write: outcome.attempt }
+        : { result: { recorded: false, reason: outcome.reason, attempt: record }, write: null }
+    })
+  }
+
+  // Navigation: Ziel per `index` oder `questionId`, oder relativ per `direction` ('next' | 'previous').
+  function setExamPositionTo({ examSessionId, index = null, questionId = null, direction = null, now = Date.now() }) {
+    return updateExamAttempt(examSessionId, { moved: false, reason: 'notFound' }, (record) => {
+      const outcome = direction
+        ? moveExamPosition(record, direction, { now })
+        : setExamPosition(record, { index, questionId, now })
+
+      return outcome.applied
+        ? { result: { moved: true, attempt: outcome.attempt }, write: outcome.attempt }
+        : { result: { moved: false, reason: outcome.reason, attempt: record }, write: null }
+    })
+  }
+
+  // Abgabe: Wertung und Statuswechsel atomar. Bereits abgegeben -> keine Änderung, derselbe Datensatz kommt zurück.
+  function finalizeExamAttempt(examSessionId, now = Date.now()) {
+    return updateExamAttempt(examSessionId, { finalized: false, reason: 'notFound' }, (record) => {
+      const outcome = finalizeExamAttemptRecord(record, now)
+
+      return outcome.finalized
+        ? { result: { finalized: true, attempt: outcome.attempt }, write: outcome.attempt }
+        : { result: { finalized: false, reason: outcome.reason, attempt: record }, write: null }
+    })
+  }
+
+  // Phase 3D: bewusstes Verwerfen einer LAUFENDEN Prüfung und einziger Lösch-Pfad für Prüfungsversuche (die frühere,
+  // bedingungslose `discardExamAttempt` wurde entfernt: sie hätte auch abgegebene Versuche gelöscht). Status prüfen
+  // und löschen laufen in einer Transaktion: ein inzwischen (z. B. in einem anderen Tab) abgegebener Versuch bleibt
+  // unverändert erhalten. Auch ein beschädigter laufender Datensatz ist verwerfbar (nur der Rohstatus zählt).
+  async function discardActiveExamAttempt(examSessionId) {
+    requireString(examSessionId, 'examSessionId')
+
+    const transaction = db().transaction(STORE_EXAMS, 'readwrite')
+    const examStore = transaction.objectStore(STORE_EXAMS)
+    const existing = await requestResult(examStore.get(examSessionId))
+    let outcome
+
+    if (!existing) {
+      outcome = { discarded: false, reason: 'notFound' }
+    } else if (existing.status !== EXAM_STATUS.IN_PROGRESS) {
+      outcome = { discarded: false, reason: 'notActive' }
+    } else {
+      examStore.delete(examSessionId)
+      outcome = { discarded: true }
+    }
+
+    await transactionDone(transaction)
+
+    return outcome
+  }
+
   // --- Ersetzungs-Index (Phase 2D): nur IDs und Policies, kein Freitext ---
 
   async function getRetiredIndex() {
@@ -700,5 +909,13 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     getRetiredIndex,
     saveRetiredIndex,
     listLibraryStates,
+    getExamAttempt,
+    getActiveExamAttempt,
+    listExamAttempts,
+    startExamAttempt,
+    recordExamAnswer,
+    setExamPosition: setExamPositionTo,
+    finalizeExamAttempt,
+    discardActiveExamAttempt,
   }
 }

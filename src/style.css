@@ -797,3 +797,230 @@ h1 {
 .language-switch-notice button {
   margin: 6px 8px 0 0;
 }
+
+/* Prüfungsmodus (Phase 3C): nutzt die vorhandenen Karten-/Button-Stile; nur Ergänzungen. */
+.exam-mode {
+  display: grid;
+  gap: 18px;
+}
+
+.exam-card,
+.exam-dialog {
+  width: min(100%, 860px);
+  margin: 0 auto;
+}
+
+.exam-meta {
+  margin-bottom: 12px;
+}
+
+.exam-progress {
+  margin-bottom: 12px;
+}
+
+.exam-language,
+.exam-selection-status,
+.exam-pool-info,
+.exam-language-fixed,
+.exam-entry-status {
+  color: #cbd5e1;
+  font-size: 0.9rem;
+}
+
+.exam-question-text {
+  margin: 20px 0 0;
+  font-size: 1.35rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.exam-option {
+  position: relative;
+  padding-left: 46px;
+  overflow-wrap: anywhere;
+}
+
+/* Auswahl neutral und nicht nur über Farbe: gefüllter statt leerer Punkt plus dickerer Rand. */
+.exam-option::before {
+  content: '○';
+  position: absolute;
+  left: 18px;
+  top: 14px;
+}
+
+.exam-option.answer-selected {
+  border-width: 3px;
+  border-color: #38bdf8;
+  background: rgba(14, 165, 233, 0.22);
+  padding: 14px 16px 14px 44px;
+  font-weight: 700;
+}
+
+.exam-option.answer-selected::before {
+  content: '●';
+  left: 16px;
+  top: 12px;
+}
+
+.exam-nav,
+.exam-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 18px;
+}
+
+.exam-nav .primary-button,
+.exam-nav .secondary-button {
+  margin-top: 0;
+}
+
+.exam-submit {
+  margin-left: auto;
+}
+
+.exam-dialog {
+  padding: 22px;
+  border: 2px solid rgba(56, 189, 248, 0.7);
+  border-radius: 24px;
+  background: rgba(15, 23, 42, 0.92);
+  text-align: center;
+}
+
+.exam-dialog:focus {
+  outline: 3px solid #7dd3fc;
+  outline-offset: 3px;
+}
+
+.exam-warning {
+  color: #fde68a;
+  font-weight: 700;
+}
+
+.exam-mode button:focus-visible {
+  outline: 3px solid #7dd3fc;
+  outline-offset: 2px;
+}
+
+.exam-mode button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Prüfungsmodus, Ergebnis-Review (Phase 3D): read-only; Zustände über Text, Symbol und Rand, nicht nur über Farbe. */
+.exam-last-badge {
+  margin: 0 0 8px;
+  color: #7dd3fc;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.exam-review h2:focus,
+.exam-result h2:focus,
+.exam-start h2:focus,
+.exam-review .exam-question-text:focus {
+  outline: 3px solid #7dd3fc;
+  outline-offset: 3px;
+}
+
+.exam-review-section {
+  color: #94a3b8;
+}
+
+.exam-review-status {
+  display: inline-block;
+  margin: 12px 0 0;
+  padding: 4px 12px;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  font-weight: 800;
+}
+
+.review-status-correct {
+  color: #86efac;
+}
+
+.review-status-incorrect {
+  color: #fca5a5;
+}
+
+.review-status-unanswered {
+  color: #fde68a;
+}
+
+.exam-review-options {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.exam-review-option {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 2px solid rgba(148, 163, 184, 0.35);
+  border-radius: 16px;
+  background: rgba(30, 41, 59, 0.75);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.exam-review-option-text {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.review-option-correct {
+  border-width: 3px;
+  border-color: rgba(34, 197, 94, 0.9);
+  background: rgba(22, 101, 52, 0.45);
+}
+
+.review-option-wrong {
+  border-width: 3px;
+  border-style: dashed;
+  border-color: rgba(239, 68, 68, 0.9);
+  background: rgba(127, 29, 29, 0.45);
+}
+
+.exam-review-tag {
+  padding: 2px 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.exam-review-noanswer {
+  margin: 12px 0 0;
+}
+
+.exam-review-feedback {
+  text-align: left;
+}
+
+.exam-review-feedback h4 {
+  margin: 0 0 8px;
+}
+
+@media (max-width: 560px) {
+  .exam-card {
+    padding: 20px;
+  }
+
+  .exam-submit {
+    margin-left: 0;
+  }
+
+  .exam-nav button,
+  .exam-actions button {
+    flex: 1 1 100%;
+  }
+}

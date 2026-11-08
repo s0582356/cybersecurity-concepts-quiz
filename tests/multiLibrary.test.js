@@ -413,7 +413,7 @@ describe('storage version', () => {
   it('keeps storageSchemaVersion 1 and raises only the DB version (new additive store)', async () => {
     const store = await newStore()
 
-    expect(DB_VERSION).toBe(3)
+    expect(DB_VERSION).toBe(4)
     expect(STORAGE_SCHEMA_VERSION).toBe(1)
     expect(await store.getStorageSchemaVersion()).toBe(1)
   })
