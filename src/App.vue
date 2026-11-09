@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import QuizCard from './components/QuizCard.vue'
 import ScoreBox from './components/ScoreBox.vue'
 import PrivateQuestionImporter from './components/PrivateQuestionImporter.vue'
@@ -86,6 +86,7 @@ const sessionInfo = ref(null)
 // Phase 2D: Ersetzungs-Index (nur IDs und Policies; wird lokal geladen, nie im Repo mitgeliefert).
 const retiredIndex = ref(null)
 const importer = ref(null)
+const sectionDetail = ref(null)
 const libraryRefresh = ref({ importedAt: null, origin: null, ageDays: null, due: false })
 const refreshDismissed = ref(false)
 const activeSessionId = ref(null)
@@ -975,6 +976,29 @@ async function openSection(sectionId) {
   resetQuizProgress()
 }
 
+// Klick auf eine Abschnittskarte ("Lernen"/"Weiterlernen"): Der nächste Schritt (Details, Sprachwahl, Start) steht weiter unten auf
+// der Seite. Deshalb wird er nach dem Öffnen ins Bild geholt (sofort statt weich bei prefers-reduced-motion) und der primäre
+// Startknopf fokussiert. Passen Details und Startknopf in ein Fenster, steht der Detailbereich oben; sonst (kleine Bildschirme)
+// wird der Startknopf selbst in die Mitte geholt. Die Runde startet nicht automatisch; nur dieser Weg scrollt (nicht das
+// Öffnen nach einer Update-Bestätigung).
+async function openSectionFromCard(sectionId) {
+  await openSection(sectionId)
+  await nextTick()
+
+  const detail = sectionDetail.value
+
+  if (activeSection.value?.sectionId !== sectionId || !detail) {
+    return
+  }
+
+  const start = detail.parentElement?.querySelector('[data-section-start]')
+  const reduceMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+  const fits = !start || start.getBoundingClientRect().bottom - detail.getBoundingClientRect().top <= window.innerHeight
+
+  ;(fits ? detail : start).scrollIntoView?.({ behavior: reduceMotion ? 'auto' : 'smooth', block: fits ? 'start' : 'center' })
+  start?.focus({ preventScroll: true })
+}
+
 async function initializeCatalog() {
   const factory = globalThis.indexedDB
 
@@ -1234,12 +1258,12 @@ onBeforeUnmount(() => progressStore.close())
       <SectionOverview
         :sections="catalog.sections"
         :selected-section-id="activeSection?.sectionId ?? null"
-        @open-section="openSection"
+        @open-section="openSectionFromCard"
       />
 
       <ExamEntryCard v-if="examEntry" :entry="examEntry" @open="examOpen = true" />
 
-      <section v-if="activeSection" class="start-card" :aria-label="t('section.detail')">
+      <section v-if="activeSection" ref="sectionDetail" class="start-card" :aria-label="t('section.detail')">
         <h2>{{ t(activeSection.label) }}</h2>
         <p>
           {{ t('section.libraries', { count: activeSection.libraries.length }) }} ·
@@ -1303,11 +1327,17 @@ onBeforeUnmount(() => progressStore.close())
           v-if="sessionInfo.status === 'resumable'"
           class="start-button"
           type="button"
+          data-section-start
           @click="resumeLearningSession"
         >
           {{ t('session.resume') }}
         </button>
-        <button class="secondary-button" type="button" @click="startLearningSession">
+        <button
+          class="secondary-button"
+          type="button"
+          :data-section-start="sessionInfo.status === 'resumable' ? null : ''"
+          @click="startLearningSession"
+        >
           {{ sessionPanel.discardLabel }}
         </button>
       </section>
@@ -1316,7 +1346,7 @@ onBeforeUnmount(() => progressStore.close())
         <h2>{{ t('section.ready.title') }}</h2>
         <p>{{ t('section.ready.text') }}</p>
 
-        <button class="start-button" type="button" @click="startQuiz">{{ t('section.ready.start') }}</button>
+        <button class="start-button" type="button" data-section-start @click="startQuiz">{{ t('section.ready.start') }}</button>
       </section>
 
       <section v-else class="start-card">
