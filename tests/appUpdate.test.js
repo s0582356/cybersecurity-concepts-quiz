@@ -13,6 +13,7 @@ import {
   resetBrowserStorage,
   resume,
   scoreText,
+  openImportFiles,
   settle,
   startQuiz,
   unmountAll,
@@ -54,7 +55,7 @@ describe('library update in the app', () => {
     const patched = library({ libraryVersion: '1.0.1' })
     const second = await reload(app, patched, 'patched.json')
 
-    expect(second.container.querySelector('.library-message').textContent).toContain('neuerer Version')
+    expect(await openImportFiles(second.container)).toContain('neuerer Version')
     expect(second.container.querySelector('.library-message-error')).toBeNull()
     await resume(second.container)
     expect(heading(second.container)).toBe(secondHeading)
@@ -130,7 +131,7 @@ describe('library update in the app', () => {
     await vi.waitFor(() => expect(second.container.querySelector('.import-report').textContent).toContain('Aktualisiert'))
     await settle()
 
-    expect(second.container.querySelector('.library-message').textContent).toContain('Version 1.1.0')
+    expect(await openImportFiles(second.container)).toContain('Version 1.1.0')
     expect(second.container.querySelector('[aria-label="Bibliotheks-Update"]')).toBeNull()
 
     await resume(second.container)

@@ -116,7 +116,7 @@ describe('UI language', () => {
 
     const report = container.querySelector('.import-report').textContent
 
-    expect(report).toContain('4 files checked · 2 libraries recognised · 1 learning sections · 5 active questions')
+    expect(report).toContain('4 files checked · 2 libraries recognised · 1 learning section · 5 active questions')
     expect(report).toContain('Newly imported')
     expect(report).toContain('Invalid')
     expect(report).toContain('The file is not valid JSON')

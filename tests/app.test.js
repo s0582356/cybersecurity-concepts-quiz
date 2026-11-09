@@ -16,6 +16,8 @@ import {
   reload,
   resume,
   scoreText,
+  openImportFiles,
+  visibleText,
   settle,
   startQuiz,
   unmountAll,
@@ -375,7 +377,8 @@ describe('V2 resume in the app', () => {
     const second = await reload(first, library)
     const summary = second.container.querySelector('[aria-label="Gespeicherter Fortschritt"]')
 
-    expect(second.container.querySelector('.library-message').textContent).toContain('Bereits aktuell')
+    expect(visibleText(second.container.querySelector('.import-report'))).not.toContain('Bereits aktuell')
+    expect(await openImportFiles(second.container)).toContain('Bereits aktuell')
     expect(summary.textContent).toContain('Beantwortet: 2 von 4')
     expect(summary.textContent).toContain('zuletzt richtig: 1')
     expect(summary.textContent).toContain('zuletzt falsch: 1')

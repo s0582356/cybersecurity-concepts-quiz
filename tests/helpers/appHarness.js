@@ -59,6 +59,36 @@ export async function importFiles(container, files) {
   await settle()
 }
 
+// Text, den Nutzer sehen: Teilbäume mit `hidden` (eingeklappte Importdetails/Dateiliste) zählen nicht mit.
+export function visibleText(root) {
+  const parts = []
+  const walk = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      parts.push(node.textContent)
+    } else if (node.nodeType === Node.ELEMENT_NODE && !node.hidden) {
+      node.childNodes.forEach(walk)
+    }
+  }
+
+  walk(root)
+
+  return parts.join(' ').replace(/\s+/g, ' ').trim()
+}
+
+// Öffnet bewusst Importdetails und Dateiliste (je nur, wenn noch zu) und liefert den sichtbaren Text des Import-Ergebnisses.
+export async function openImportFiles(container) {
+  for (const kind of ['details', 'files']) {
+    const toggle = container.querySelector(`[data-import="${kind}-toggle"]`)
+
+    if (toggle.getAttribute('aria-expanded') === 'false') {
+      toggle.click()
+      await nextTick()
+    }
+  }
+
+  return visibleText(container.querySelector('.import-report'))
+}
+
 export function sectionCards(container) {
   return [...container.querySelectorAll('.section-card')]
 }

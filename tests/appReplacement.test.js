@@ -10,6 +10,7 @@ import {
   resetBrowserStorage,
   resume,
   scoreText,
+  openImportFiles,
   settle,
   unmountAll,
   withStore,
@@ -88,7 +89,7 @@ describe('replacement migration in the app', () => {
     const app = await prepare()
 
     await importRegistry(app.container, REGISTRY)
-    expect(app.container.querySelector('.library-message-info').textContent).toContain('1 Einträge')
+    expect(await openImportFiles(app.container)).toContain('1 Einträge')
 
     const stored = await withStore((store) => store.getRetiredIndex())
 
@@ -117,7 +118,7 @@ describe('replacement migration in the app', () => {
     // Reload + erneuter Import: unverändert, kein weiteres Update.
     const again = await reload(next, aV2(), 'a2.json')
 
-    expect(again.container.querySelector('.library-message').textContent).toContain('Bereits aktuell')
+    expect(await openImportFiles(again.container)).toContain('Bereits aktuell')
     expect(await withStore((store) => store.getQuestionProgress(B, 'sec-a31-0001'))).toEqual(target)
     expect((await withStore((store) => store.listProgressForLibrary(B))).length).toBe(1)
   })

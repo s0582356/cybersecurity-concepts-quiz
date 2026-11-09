@@ -634,6 +634,144 @@ h1 {
   margin-top: 6px;
 }
 
+/* Kompakte Import-Ergebnisanzeige: Erfolg kompakt, Fehler prominent */
+.import-report [hidden] {
+  display: none;
+}
+
+.import-problems {
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border: 2px solid rgba(248, 113, 113, 0.7);
+  border-radius: 16px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #fecaca;
+  text-align: left;
+}
+
+.import-problems-title {
+  margin: 0 0 10px;
+  font-weight: 800;
+  font-size: 1.05rem;
+}
+
+.import-problem-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.import-problems .library-message {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  margin: 0 0 8px;
+  text-align: left;
+}
+
+.import-problems .library-message:last-child {
+  margin-bottom: 0;
+}
+
+.import-problems .start-button {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
+.import-file-name {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.import-compact {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.import-compact p {
+  margin: 0;
+}
+
+.import-success {
+  color: #bbf7d0;
+  font-size: 1.2rem;
+  font-weight: 800;
+}
+
+.import-languages,
+.import-hints {
+  color: #cbd5e1;
+  font-size: 0.95rem;
+}
+
+.import-toggle {
+  margin-top: 4px;
+}
+
+.import-details {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+}
+
+.import-sections {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.import-section-row {
+  padding: 6px 4px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+  overflow-wrap: anywhere;
+}
+
+.import-details .import-results {
+  width: 100%;
+}
+
+.import-file {
+  display: flex;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.import-file-problem {
+  color: #fecaca;
+}
+
+.import-file-mark {
+  flex: none;
+}
+
+.import-file-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.import-file-meta {
+  color: #cbd5e1;
+}
+
+.import-file-problem .import-file-meta {
+  color: #fecaca;
+}
+
 .section-overview {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
