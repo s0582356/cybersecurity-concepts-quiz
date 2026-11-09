@@ -1,13 +1,20 @@
 <script setup>
+import { ref } from 'vue'
 import { parseQuestionFile } from '../lib/library/parseLibrary.js'
 import { msg, t } from '../i18n/index.js'
 
 defineProps({
   // Ohne importierte Bibliothek: Hinweis und Button entsprechend beschriften.
   empty: { type: Boolean, default: false },
+  // Optionale Statuszeile (z. B. "Zuletzt aktualisiert: 09.11.2026").
+  lastUpdated: { type: String, default: null },
 })
 
 const emit = defineEmits(['files-loaded'])
+const fileInput = ref(null)
+
+// Öffnet die Dateiauswahl des bestehenden Imports (z. B. aus dem Aktualisierungshinweis).
+defineExpose({ openPicker: () => fileInput.value?.click() })
 
 // Jede Datei wird einzeln gelesen und geprüft; ein Fehler betrifft nur diese Datei.
 async function readEntry(file) {
@@ -60,11 +67,13 @@ const handleFileChange = async (event) => {
     <div>
       <h2>{{ empty ? t('import.title.empty') : t('import.title') }}</h2>
       <p>{{ t('import.text') }}</p>
+      <p v-if="lastUpdated" class="import-last-updated">{{ lastUpdated }}</p>
     </div>
 
     <label class="import-button">
       {{ empty ? t('import.button.empty') : t('import.button') }}
       <input
+        ref="fileInput"
         type="file"
         accept=".json,application/json"
         multiple

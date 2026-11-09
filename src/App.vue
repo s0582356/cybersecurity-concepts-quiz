@@ -6,9 +6,18 @@ import PrivateQuestionImporter from './components/PrivateQuestionImporter.vue'
 import ImportReport from './components/ImportReport.vue'
 import SectionOverview from './components/SectionOverview.vue'
 import ExamEntryCard from './components/ExamEntryCard.vue'
+import LibraryRefreshNotice from './components/LibraryRefreshNotice.vue'
 import ExamMode from './components/ExamMode.vue'
 import sampleQuestions from './data/public/sampleQuestions.json'
 import { BATCH_STATUS, planLibraryBatch, summarizeBatch } from './domain/libraryCatalog.js'
+import {
+  formatImportDate,
+  isSuccessfulLibraryImport,
+  loadLibraryRefresh,
+  noteLibraryImport,
+  REFRESH_ORIGIN,
+  requestPersistentStorage,
+} from './storage/libraryRefresh.js'
 import {
   SESSION_STATUS,
   isValidOptionOrder,
@@ -76,6 +85,9 @@ const librarySummary = ref(null)
 const sessionInfo = ref(null)
 // Phase 2D: Ersetzungs-Index (nur IDs und Policies; wird lokal geladen, nie im Repo mitgeliefert).
 const retiredIndex = ref(null)
+const importer = ref(null)
+const libraryRefresh = ref({ importedAt: null, origin: null, ageDays: null, due: false })
+const refreshDismissed = ref(false)
 const activeSessionId = ref(null)
 let storageReady = null
 let storageError = ''
@@ -87,6 +99,19 @@ let memoryEntries = new Map()
 let catalogToken = 0
 
 const hasCatalog = computed(() => catalog.value.sections.length > 0)
+// 30-Tage-Erinnerung: nur mit gespeicherten Libraries, nicht-blockierend, "Später" gilt nur für diese Sitzung.
+const refreshNoticeVisible = computed(() => hasCatalog.value && libraryRefresh.value.due && !refreshDismissed.value)
+// "Zuletzt aktualisiert" nur für einen echten vollständigen Refresh; eine Baseline (Altbestand, unsicherer Zeitpunkt) ist
+// kein Aktualisierungsdatum und wird neutral als unbekannt angezeigt.
+const lastUpdatedLabel = computed(() => {
+  if (!hasCatalog.value || !libraryRefresh.value.importedAt) {
+    return null
+  }
+
+  return libraryRefresh.value.origin === REFRESH_ORIGIN.IMPORT
+    ? t('refresh.lastUpdated', { date: formatImportDate(libraryRefresh.value.importedAt, t('import.numberLocale')) })
+    : t('refresh.unknownDate')
+})
 
 // Phase 3C: Einstieg in den Prüfungsmodus (logische Sektion neben den Lernabschnitten, keine eigene Library).
 // Die Kachel kennt nur Zahlen des laufenden Versuchs; der Versuch selbst bleibt im Exam-Core/-Store.
@@ -972,6 +997,30 @@ async function initializeCatalog() {
 
   if (await ensureStorage()) {
     await refreshCatalog()
+    await refreshLibraryAge()
+  }
+}
+
+// Zeitpunkt des letzten Imports lesen (Altbestand ohne Zeitpunkt bekommt hier den Basiswert). Best effort.
+async function refreshLibraryAge() {
+  try {
+    libraryRefresh.value = await loadLibraryRefresh(progressStore)
+  } catch {
+    libraryRefresh.value = { importedAt: null, origin: null, ageDays: null, due: false }
+  }
+}
+
+// Nach einem Import: den globalen Zeitpunkt nur nach vollständigem, sauberem Refresh erneuern (30-Tage-Zähler startet neu)
+// und bei übernommenen Libraries den Browser um dauerhaften Speicher bitten.
+async function noteImportSucceeded(results) {
+  if (await noteLibraryImport(progressStore, results)) {
+    refreshDismissed.value = false
+  }
+
+  await refreshLibraryAge()
+
+  if (isSuccessfulLibraryImport(results)) {
+    requestPersistentStorage()
   }
 }
 
@@ -1039,6 +1088,7 @@ async function importBatch(entries) {
 
     retiredIndex.value = batch.retiredIndex
     pendingEntries = batch.pending
+    await noteImportSucceeded(batch.results)
     importReport.value = {
       results: batch.results,
       summary: batch.summary,
@@ -1098,6 +1148,7 @@ async function confirmLibraryUpdate(libraryId) {
     status: BATCH_STATUS.VERSION_UPDATED,
     message: msg('result.confirmDone', { version: entry.library.libraryVersion }),
   })
+  await noteImportSucceeded(importReport.value.results)
   await refreshCatalog()
   await openSection(entry.library.learningSectionId)
 }
@@ -1150,7 +1201,19 @@ onBeforeUnmount(() => progressStore.close())
     />
 
     <section v-else-if="!isQuizStarted" class="start-layout" :aria-label="t('app.prepare')">
-      <PrivateQuestionImporter :empty="!hasCatalog" @files-loaded="handleFilesLoaded" />
+      <PrivateQuestionImporter
+        ref="importer"
+        :empty="!hasCatalog"
+        :last-updated="lastUpdatedLabel"
+        @files-loaded="handleFilesLoaded"
+      />
+      <LibraryRefreshNotice
+        v-if="refreshNoticeVisible"
+        :age-days="libraryRefresh.ageDays"
+        :origin="libraryRefresh.origin"
+        @update-now="importer?.openPicker()"
+        @later="refreshDismissed = true"
+      />
 
       <p
         v-if="importMessage"

@@ -1162,3 +1162,37 @@ h1 {
     flex: 1 1 100%;
   }
 }
+
+/* 30-Tage-Erinnerung zur Library-Aktualisierung (nicht-blockierend) */
+.import-last-updated {
+  margin-top: 6px;
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+.library-refresh-notice {
+  width: min(100%, 760px);
+  margin: 0 auto 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-radius: 16px;
+  background: rgba(245, 158, 11, 0.1);
+  color: #fde68a;
+  text-align: left;
+}
+
+.library-refresh-notice h2 {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+}
+
+.library-refresh-notice p {
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.library-refresh-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}

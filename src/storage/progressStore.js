@@ -60,6 +60,8 @@ const INDEX_BY_LIBRARY = 'byLibrary'
 const INDEX_BY_STATUS = 'byStatus'
 const META_SCHEMA_KEY = 'storageSchemaVersion'
 const META_RETIRED_INDEX_KEY = 'retiredIndex'
+// Zeitpunkt (ms seit Epoche) des letzten erfolgreichen Library-Imports; Grundlage der 30-Tage-Erinnerung (kein Schema-Update).
+const META_LIBRARY_IMPORT_KEY = 'lastSuccessfulLibraryImportAt'
 
 export class StorageUnavailableError extends Error {
   constructor(key, cause) {
@@ -730,6 +732,27 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     return requestResult(db().transaction(STORE_LIBRARIES).objectStore(STORE_LIBRARIES).getAll())
   }
 
+  // --- Zeitpunkt des letzten erfolgreichen Library-Imports (Erinnerung, nur Meta-Eintrag) ---
+
+  // Meta-Eintrag { key, value, origin }: origin 'import' = vollständiger, sauberer Refresh; 'baseline' = Startpunkt der
+  // Erinnerung ohne bekanntes Importdatum (Altbestand, unsicherer Zeitstempel). Fehlt origin, gilt der Eintrag als 'baseline'.
+  async function getLibraryImportRecord() {
+    return (
+      (await requestResult(db().transaction(STORE_META).objectStore(STORE_META).get(META_LIBRARY_IMPORT_KEY))) ?? null
+    )
+  }
+
+  async function getLastLibraryImportAt() {
+    return (await getLibraryImportRecord())?.value ?? null
+  }
+
+  async function recordLibraryImport(at = Date.now(), origin = 'import') {
+    const transaction = db().transaction(STORE_META, 'readwrite')
+
+    transaction.objectStore(STORE_META).put({ key: META_LIBRARY_IMPORT_KEY, value: at, origin })
+    await transactionDone(transaction)
+  }
+
   // Wendet Ersetzungen innerhalb einer laufenden Transaktion an (siehe applyReplacementToProgress).
   // Gelesene Datensätze werden vor dem Schreiben geprüft; ein Fehler bricht die Transaktion ab.
   async function migrateReplacements(progressObjectStore, sourceLibraryId, replacements, now) {
@@ -909,6 +932,9 @@ export function createProgressStore({ indexedDB: factoryOverride, dbName = DB_NA
     getRetiredIndex,
     saveRetiredIndex,
     listLibraryStates,
+    getLibraryImportRecord,
+    getLastLibraryImportAt,
+    recordLibraryImport,
     getExamAttempt,
     getActiveExamAttempt,
     listExamAttempts,

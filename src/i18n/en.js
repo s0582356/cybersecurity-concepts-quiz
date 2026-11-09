@@ -55,6 +55,15 @@ export const en = {
   'import.summary.sections': '{display} learning section|{display} learning sections',
   'import.summary.questions': '{display} active question|{display} active questions',
   'import.confirmUpdate': 'Apply update',
+  'refresh.title': 'Library update recommended',
+  'refresh.text':
+    'Your Security+ libraries were last updated {count} days ago. You can keep learning or check now whether newer files are available.',
+  'refresh.textUnknown':
+    'No update of your Security+ libraries has been recorded for {count} days. You can keep learning or check now whether newer files are available.',
+  'refresh.unknownDate': 'Update date unknown',
+  'refresh.updateNow': 'Update now',
+  'refresh.later': 'Later',
+  'refresh.lastUpdated': 'Last updated: {date}',
   'import.success': 'Import successful',
   'import.partial': 'Import partially successful',
   'import.languages.de': 'German ✓',

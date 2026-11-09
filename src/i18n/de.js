@@ -56,6 +56,15 @@ export const de = {
   'import.summary.sections': '{display} Lernabschnitt|{display} Lernabschnitte',
   'import.summary.questions': '{display} aktive Frage|{display} aktive Fragen',
   'import.confirmUpdate': 'Aktualisierung übernehmen',
+  'refresh.title': 'Bibliotheken aktualisieren empfohlen',
+  'refresh.text':
+    'Deine Security+-Bibliotheken wurden zuletzt vor {count} Tagen aktualisiert. Du kannst weiterlernen oder jetzt prüfen, ob neuere Dateien verfügbar sind.',
+  'refresh.textUnknown':
+    'Seit {count} Tagen ist keine Aktualisierung deiner Security+-Bibliotheken bekannt. Du kannst weiterlernen oder jetzt prüfen, ob neuere Dateien verfügbar sind.',
+  'refresh.unknownDate': 'Aktualisierungsdatum unbekannt',
+  'refresh.updateNow': 'Jetzt aktualisieren',
+  'refresh.later': 'Später',
+  'refresh.lastUpdated': 'Zuletzt aktualisiert: {date}',
   'import.success': 'Import erfolgreich',
   'import.partial': 'Import teilweise erfolgreich',
   'import.languages.de': 'Deutsch ✓',
